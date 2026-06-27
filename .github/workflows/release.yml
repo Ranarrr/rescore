@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRESCORE_WARNINGS_AS_ERRORS=OFF
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRESCORE_BUILD_TESTS=OFF -DRESCORE_WARNINGS_AS_ERRORS=OFF
 
       - name: Build
         run: cmake --build build --config Release --target rescore
