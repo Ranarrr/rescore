@@ -1,0 +1,30 @@
+name: ci
+
+# Build and run the test suite on every push and pull request to main, on all
+# three target platforms. The release workflow (release.yml) handles tagged
+# binary builds; this one guards correctness on every change.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: test-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build tests
+        run: cmake --build build --config Release --target rescore_tests
+
+      - name: Run tests
+        run: ctest --test-dir build -C Release --output-on-failure
