@@ -88,13 +88,8 @@ if(RESCORE_BUILD_TESTS)
 endif()
 
 # ----------------------------------------------------------------------------
-# Installation: export the rescore CLI (and its static core via the export set).
+# Installation: the CLI (rescore-cli) and, when built, the GUI (rescore) install
+# themselves from their subdirectories; here we install the license file.
 # ----------------------------------------------------------------------------
-install(
-    TARGETS rescore
-    EXPORT RescoreTargets
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    BUNDLE DESTINATION ${CMAKE_INSTALL_BINDIR})
-
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/licenses/rescore OPTIONAL)

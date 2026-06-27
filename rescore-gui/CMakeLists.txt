@@ -50,8 +50,9 @@ target_include_directories(rescore_imgui SYSTEM PUBLIC
     ${imgui_SOURCE_DIR}/backends)
 target_link_libraries(rescore_imgui PUBLIC glfw OpenGL::GL)
 
-add_executable(rescore_gui src/main.cpp)
-target_link_libraries(rescore_gui PRIVATE rescore::core rescore_imgui nfd)
+# The GUI is the project's primary app, so its binary is simply `rescore`.
+add_executable(rescore src/main.cpp)
+target_link_libraries(rescore PRIVATE rescore::core rescore_imgui nfd)
 
 # Per-platform app packaging:
 #  - Windows: GUI-subsystem app (no console window), keeping a standard main().
@@ -60,8 +61,13 @@ target_link_libraries(rescore_gui PRIVATE rescore::core rescore_imgui nfd)
 #             nativefiledialog-extended needs GTK 3 dev (or configure with
 #             -DNFD_PORTAL=ON to use the xdg-desktop-portal / DBus backend).
 if(WIN32)
-    set_target_properties(rescore_gui PROPERTIES WIN32_EXECUTABLE TRUE)
-    target_link_options(rescore_gui PRIVATE "/ENTRY:mainCRTStartup")
+    set_target_properties(rescore PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_link_options(rescore PRIVATE "/ENTRY:mainCRTStartup")
 elseif(APPLE)
-    set_target_properties(rescore_gui PROPERTIES MACOSX_BUNDLE TRUE)
+    set_target_properties(rescore PROPERTIES MACOSX_BUNDLE TRUE)
 endif()
+
+# Install the GUI alongside the CLI when it is built.
+install(TARGETS rescore
+    RUNTIME DESTINATION bin
+    BUNDLE DESTINATION bin)

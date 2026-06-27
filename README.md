@@ -47,18 +47,20 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
 
-The `rescore` executable is written to `build/bin/` (under a per-config subfolder, e.g. `build/bin/Release/`, for multi-config generators such as Visual Studio).
+By default this builds the **`rescore-cli`** command-line tool, written to `build/bin/` (under a per-config subfolder, e.g. `build/bin/Release/`, on multi-config generators such as Visual Studio).
 
-To build the desktop GUI too, add `-DRESCORE_BUILD_GUI=ON`. For a dependency-free build of just the converter, add `-DRESCORE_BUILD_TESTS=OFF`.
+The desktop **GUI** (the main `rescore` app) is built with `-DRESCORE_BUILD_GUI=ON`. On Linux it needs X11/OpenGL/GTK development packages (e.g. `xorg-dev libgl1-mesa-dev libgtk-3-dev`). For a dependency-free build of just the CLI, add `-DRESCORE_BUILD_TESTS=OFF`.
 
 ---
 
 ## Use
 
-Convert a single file:
+**GUI:** open the `rescore` app and drag a `.mus` file onto the window (or pick one with the file dialog). It writes a `.musicxml` next to the original.
+
+**CLI:** convert a single file:
 
 ```sh
-rescore in.mus -o out.musicxml
+rescore-cli in.mus -o out.musicxml
 ```
 
 Useful flags:
