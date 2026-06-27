@@ -7,8 +7,11 @@
 
 #include "rescore/musicxml.hpp"
 
+#include <algorithm>
 #include <cstddef>
+#include <set>
 #include <string>
+#include <vector>
 
 namespace rescore::musicxml {
 namespace {
@@ -185,6 +188,42 @@ private:
     return "quarter";
 }
 
+/// MusicXML element name for an articulation that lives inside <articulations>.
+/// Fermata is excluded (it is a direct child of <notations>, handled separately).
+[[nodiscard]] const char* articulation_element(ir::Articulation a) {
+    switch (a) {
+    case ir::Articulation::Staccato:
+        return "staccato";
+    case ir::Articulation::Accent:
+        return "accent";
+    case ir::Articulation::Tenuto:
+        return "tenuto";
+    case ir::Articulation::StrongAccent:
+        return "strong-accent";
+    case ir::Articulation::Staccatissimo:
+        return "staccatissimo";
+    case ir::Articulation::DetachedLegato:
+        return "detached-legato";
+    case ir::Articulation::Fermata:
+        return nullptr;
+    }
+    return nullptr;
+}
+
+[[nodiscard]] const char* syllabic_name(ir::Lyric::Syllabic s) {
+    switch (s) {
+    case ir::Lyric::Syllabic::Single:
+        return "single";
+    case ir::Lyric::Syllabic::Begin:
+        return "begin";
+    case ir::Lyric::Syllabic::Middle:
+        return "middle";
+    case ir::Lyric::Syllabic::End:
+        return "end";
+    }
+    return "single";
+}
+
 [[nodiscard]] const char* mode_name(ir::KeySignature::Mode m) {
     switch (m) {
     case ir::KeySignature::Mode::Major:
@@ -238,7 +277,7 @@ void emit_attributes(XmlBuilder& b, const ir::Measure& measure, const ir::Clef& 
 }
 
 void emit_note(XmlBuilder& b, const ir::Entry& entry, const ir::Note& note, bool is_chord_member,
-               int divisions) {
+               int voice_num, int divisions) {
     b.open("note");
 
     if (is_chord_member) {
@@ -270,24 +309,123 @@ void emit_note(XmlBuilder& b, const ir::Entry& entry, const ir::Note& note, bool
         }
     }
 
+    // <voice> assigns the note to a voice/layer (1-based); it follows <tie> and
+    // precedes <type> in the MusicXML note content order.
+    b.leaf("voice", std::to_string(voice_num));
+
     b.leaf("type", note_type_name(entry.type.name));
     for (int d = 0; d < entry.type.dots; ++d) {
         b.empty("dot");
     }
 
-    // <notations><tied> are the notated (visual) ties.
-    if (!entry.is_rest && (note.tie_start || note.tie_stop)) {
+    // Tuplet ratio: the drawn note value differs from the sounding duration.
+    if (entry.time_mod.actual_notes > 0 && entry.time_mod.normal_notes > 0) {
+        b.open("time-modification");
+        b.leaf("actual-notes", std::to_string(entry.time_mod.actual_notes));
+        b.leaf("normal-notes", std::to_string(entry.time_mod.normal_notes));
+        b.close("time-modification");
+    }
+
+    // <notations>: notated ties, slurs, tuplet brackets, articulations, fermata.
+    // Slurs / tuplets / articulations / fermata attach to the entry, so they are
+    // emitted only on its primary note; chord members carry just their <tied>.
+    const bool has_tie = !entry.is_rest && (note.tie_start || note.tie_stop);
+    const bool primary = !is_chord_member;
+    const bool has_slur = primary && (entry.slur_start != 0 || entry.slur_stop != 0);
+    const bool has_tuplet = primary && (entry.tuplet_start || entry.tuplet_stop);
+    bool has_artic = false;
+    bool has_fermata = false;
+    if (primary) {
+        for (const ir::Articulation a : entry.articulations) {
+            if (a == ir::Articulation::Fermata) {
+                has_fermata = true;
+            } else {
+                has_artic = true;
+            }
+        }
+    }
+    if (has_tie || has_slur || has_tuplet || has_artic || has_fermata) {
         b.open("notations");
-        if (note.tie_stop) {
+        if (has_tie && note.tie_stop) {
             b.empty_attr("tied", "type=\"stop\"");
         }
-        if (note.tie_start) {
+        if (has_tie && note.tie_start) {
             b.empty_attr("tied", "type=\"start\"");
+        }
+        if (has_slur && entry.slur_stop != 0) {
+            b.empty_attr("slur", "type=\"stop\" number=\"" + std::to_string(entry.slur_stop) + "\"");
+        }
+        if (has_slur && entry.slur_start != 0) {
+            b.empty_attr("slur",
+                         "type=\"start\" number=\"" + std::to_string(entry.slur_start) + "\"");
+        }
+        if (has_tuplet && entry.tuplet_stop) {
+            b.empty_attr("tuplet", "type=\"stop\"");
+        }
+        if (has_tuplet && entry.tuplet_start) {
+            b.empty_attr("tuplet", "type=\"start\"");
+        }
+        if (has_artic) {
+            b.open("articulations");
+            for (const ir::Articulation a : entry.articulations) {
+                if (const char* name = articulation_element(a)) {
+                    b.empty(name);
+                }
+            }
+            b.close("articulations");
+        }
+        if (has_fermata) {
+            b.empty("fermata");
         }
         b.close("notations");
     }
 
+    // <lyric>: syllables under the note (after <notations>), primary note only.
+    if (primary) {
+        for (const ir::Lyric& ly : entry.lyrics) {
+            b.open_attr("lyric", "number=\"" + std::to_string(ly.verse) + "\"");
+            b.leaf("syllabic", syllabic_name(ly.syllabic));
+            b.leaf("text", ly.text);
+            b.close("lyric");
+        }
+    }
+
     b.close("note");
+}
+
+/// Whether `s` is one of the dynamics MusicXML defines as a direct <dynamics>
+/// child element; anything else is emitted as <other-dynamics>text.
+[[nodiscard]] bool is_standard_dynamic(const std::string& s) {
+    static const std::set<std::string> kStandard = {
+        "p",  "pp", "ppp", "pppp", "ppppp", "pppppp", "f",  "ff",   "fff", "ffff", "fffff",
+        "ffffff", "mp", "mf",  "sf", "sfp",   "sfpp",   "fp", "rf",   "rfz", "sfz",  "sffz",
+        "fz", "n",  "pf",  "sfzp"};
+    return kStandard.find(s) != kStandard.end();
+}
+
+/// Emit a measure-level <direction>: a dynamic mark or a hairpin (wedge) endpoint.
+void emit_direction(XmlBuilder& b, const ir::Direction& d) {
+    b.open_attr("direction", "placement=\"below\"");
+    b.open("direction-type");
+    switch (d.kind) {
+    case ir::Direction::Kind::Dynamic:
+        b.open("dynamics");
+        if (is_standard_dynamic(d.dynamic)) {
+            b.empty(d.dynamic);
+        } else {
+            b.leaf("other-dynamics", d.dynamic);
+        }
+        b.close("dynamics");
+        break;
+    case ir::Direction::Kind::WedgeStart:
+        b.empty_attr("wedge", d.crescendo ? "type=\"crescendo\"" : "type=\"diminuendo\"");
+        break;
+    case ir::Direction::Kind::WedgeStop:
+        b.empty_attr("wedge", "type=\"stop\"");
+        break;
+    }
+    b.close("direction-type");
+    b.close("direction");
 }
 
 void emit_measure(XmlBuilder& b, const ir::Measure& measure, const ir::Clef& fallback_clef,
@@ -298,22 +436,54 @@ void emit_measure(XmlBuilder& b, const ir::Measure& measure, const ir::Clef& fal
         emit_attributes(b, measure, fallback_clef, divisions);
     }
 
-    // MVP: a single voice per staff. If multiple voices are present we still
-    // emit them in sequence (the IR keeps each voice's entries ordered); full
-    // multi-voice backup/forward handling is deferred per the MVP scope.
+    // Measure-level directions (dynamics / hairpins), sorted by EDU position and
+    // emitted within voice 1 at their beat; any remaining (e.g. a wedge stop)
+    // follow the notes.
+    std::vector<const ir::Direction*> directions;
+    directions.reserve(measure.directions.size());
+    for (const ir::Direction& d : measure.directions) {
+        directions.push_back(&d);
+    }
+    std::sort(directions.begin(), directions.end(),
+              [](const ir::Direction* a, const ir::Direction* c) {
+                  return a->position < c->position;
+              });
+    std::size_t di = 0;
+
+    // Each voice fills the measure; voices after the first are preceded by a
+    // <backup> that rewinds time to the start of the measure.
+    int voice_num = 0;
+    ir::Edu prev_voice_duration = 0;
     for (const auto& voice : measure.voices) {
+        ++voice_num;
+        if (voice_num > 1 && prev_voice_duration > 0) {
+            b.open("backup");
+            b.leaf("duration", std::to_string(edu_to_duration(prev_voice_duration, divisions)));
+            b.close("backup");
+        }
+        ir::Edu voice_duration = 0;
         for (const auto& entry : voice.entries) {
-            if (entry.is_rest || entry.notes.empty()) {
-                // A rest is emitted as a single <note><rest/>...; build a
-                // synthetic single-note iteration.
-                ir::Note placeholder{};
-                emit_note(b, entry, placeholder, /*is_chord_member=*/false, divisions);
-            } else {
-                for (std::size_t i = 0; i < entry.notes.size(); ++i) {
-                    emit_note(b, entry, entry.notes[i], /*is_chord_member=*/i > 0, divisions);
+            if (voice_num == 1) {
+                while (di < directions.size() && directions[di]->position <= voice_duration) {
+                    emit_direction(b, *directions[di]);
+                    ++di;
                 }
             }
+            if (entry.is_rest || entry.notes.empty()) {
+                ir::Note placeholder{};
+                emit_note(b, entry, placeholder, /*is_chord_member=*/false, voice_num, divisions);
+            } else {
+                for (std::size_t i = 0; i < entry.notes.size(); ++i) {
+                    emit_note(b, entry, entry.notes[i], /*is_chord_member=*/i > 0, voice_num,
+                              divisions);
+                }
+            }
+            voice_duration += entry.duration;
         }
+        prev_voice_duration = voice_duration;
+    }
+    for (; di < directions.size(); ++di) {
+        emit_direction(b, *directions[di]);
     }
 
     b.close("measure");

@@ -11,6 +11,7 @@ add_library(rescore_core STATIC
     src/container/container.cpp
     src/container/lzss.cpp
     src/container/others.cpp
+    src/container/entries.cpp
     src/musicxml/emit.cpp
 )
 

@@ -81,19 +81,62 @@ struct Note {
     bool tie_stop{false};
 };
 
+/// A note articulation mark. `StrongAccent` is MusicXML's marcato (the ^ wedge).
+enum class Articulation {
+    Staccato,
+    Accent,
+    Tenuto,
+    StrongAccent,
+    Staccatissimo,
+    DetachedLegato,
+    Fermata,
+};
+
+/// One lyric syllable attached to an entry. `verse` is the 1-based verse line
+/// (MusicXML lyric number); `syllabic` records the hyphenation role.
+struct Lyric {
+    int verse{1};
+    enum class Syllabic { Single, Begin, Middle, End } syllabic{Syllabic::Single};
+    std::string text;
+};
+
+/// A tuplet ratio: `actual` notes performed in the time of `normal` (a triplet is
+/// {3, 2}). {0, 0} means the entry is not part of a tuplet.
+struct TimeModification {
+    int actual_notes{0};
+    int normal_notes{0};
+};
+
 /// One rhythmic event in a voice: a rest, a single note, or a chord (when
-/// `notes.size() > 1`). `duration` is the authoritative EDU value; `type` is the
-/// symbolic rendering derived from it.
+/// `notes.size() > 1`). `duration` is the authoritative (sounding) EDU value;
+/// `type` is the symbolic note value drawn (the displayed value for tuplets).
 struct Entry {
     Edu duration{kEduQuarter};
     bool is_rest{false};
     NoteType type{};
     std::vector<Note> notes;
+    TimeModification time_mod{}; // tuplet ratio; {0, 0} when not a tuplet
+    bool tuplet_start{false};    // first entry of a tuplet bracket
+    bool tuplet_stop{false};     // last entry of a tuplet bracket
+    int slur_start{0};           // slur number starting on this entry (0 = none)
+    int slur_stop{0};            // slur number stopping on this entry (0 = none)
+    std::vector<Articulation> articulations; // marks attached to this entry
+    std::vector<Lyric> lyrics;               // syllables under this entry
 };
 
 /// A single rhythmic stream (one layer/voice) within a measure.
 struct Voice {
     std::vector<Entry> entries;
+};
+
+/// A measure-level direction: a dynamic mark or a hairpin (wedge) endpoint,
+/// anchored at an EDU offset from the measure start.
+struct Direction {
+    enum class Kind { Dynamic, WedgeStart, WedgeStop } kind{Kind::Dynamic};
+    std::string dynamic;       // dynamic text (e.g. "f", "p") when kind == Dynamic
+    bool crescendo{true};      // when kind == WedgeStart: crescendo vs diminuendo
+    Edu position{0};           // EDU offset within the measure (beat anchor)
+    std::uint16_t staff{0};    // owning staff number (0 = default / first part)
 };
 
 /// A measure. Attribute changes (key/time/clef) are present only when they
@@ -103,6 +146,7 @@ struct Measure {
     std::optional<TimeSignature> time;
     std::optional<Clef> clef;
     std::vector<Voice> voices;
+    std::vector<Direction> directions; // measure-level dynamics / hairpins
 };
 
 /// A staff: an initial clef plus its sequence of measures.

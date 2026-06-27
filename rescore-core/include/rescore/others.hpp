@@ -39,6 +39,16 @@ struct OtherRecord {
 inline constexpr std::uint16_t kTagMeasureSpec = 0x4D53;
 /// Tag of a Staff Spec record ("IS" as a little-endian 16-bit word).
 inline constexpr std::uint16_t kTagStaffSpec = 0x4953;
+/// Smart-shape definition tags. The two ASCII bytes are stored low byte first,
+/// so 'xS' (bytes 78 53) reads as 0x5378 and 'xM' (bytes 78 4D) as 0x4D78.
+inline constexpr std::uint16_t kTagSmartShapeSeg = 0x5378;    // 'xS' (definition segments)
+inline constexpr std::uint16_t kTagSmartShapeMaster = 0x4D78; // 'xM' (segment count)
+/// Articulation-definition library tag ('XI', bytes 58 49).
+inline constexpr std::uint16_t kTagArticDef = 0x4958;
+/// Measure-attached expression assignment tag ('YD', bytes 59 44).
+inline constexpr std::uint16_t kTagExprAssign = 0x4459;
+/// Text-expression definition tag ('TD', bytes 54 44).
+inline constexpr std::uint16_t kTagTextExprDef = 0x4454;
 
 /// On-disk geometry of the content chunk: it begins at offset 0x200 with a
 /// 10-byte header `[type:2 LE][size:4 LE][checksum:4 LE]`, where `size` counts

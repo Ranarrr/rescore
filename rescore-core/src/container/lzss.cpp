@@ -65,6 +65,30 @@ constexpr std::array<std::uint8_t, 256> build_lookup(const std::array<std::uint8
 constexpr std::array<std::uint8_t, 256> kSymLookup = build_lookup(kSymBits, kSymCodes);
 constexpr std::array<std::uint8_t, 256> kDistLookup = build_lookup(kDistBits, kDistCodes);
 
+// Method-1 streams Huffman-code their literals with a static 256-symbol table
+// (the match/distance codecs are identical to method 0). The two tables below are
+// the per-symbol code length and the LSB-first canonical code.
+#include "lzss_lit_tables.inc" // defines kLitLen[256], kLitCode[256]
+
+constexpr int kLitMaxLen = 13; // = max(kLitLen)
+
+/// Sentinel-keyed (length, code) -> symbol table for the method-1 literal codes.
+/// The index is (1 << len) | code, so an LSB-first prefix resolves to its symbol
+/// at exactly the right length. Built once on first use; -1 = no symbol.
+const std::array<std::int16_t, 1u << (kLitMaxLen + 1)>& lit_decode_table() {
+    static const std::array<std::int16_t, 1u << (kLitMaxLen + 1)> table = []() {
+        std::array<std::int16_t, 1u << (kLitMaxLen + 1)> t{};
+        t.fill(static_cast<std::int16_t>(-1));
+        for (std::size_t sym = 0; sym < kLitLen.size(); ++sym) {
+            const unsigned len = kLitLen[sym];
+            const unsigned code = kLitCode[sym] & ((1u << len) - 1u);
+            t[(static_cast<std::size_t>(1) << len) | code] = static_cast<std::int16_t>(sym);
+        }
+        return t;
+    }();
+    return table;
+}
+
 /// LSB-first bit reader over a borrowed byte span. Bits are
 /// consumed from the low end of the buffer; the buffer is topped up one input
 /// byte at a time. On input exhaustion `failed_` latches and no byte is read
@@ -119,11 +143,11 @@ Result<std::vector<std::byte>> inflate_content(std::span<const std::byte> stream
     const int nbits = static_cast<int>(static_cast<std::uint8_t>(stream[1]));
     const auto init = static_cast<std::uint32_t>(static_cast<std::uint8_t>(stream[2]));
 
-    if (method != 0) {
+    if (method != 0 && method != 1) {
         return Result<std::vector<std::byte>>::fail(
             ErrorCode::NotImplemented,
-            "content stream uses dynamic Huffman tables (method " + std::to_string(method) +
-                "); only static tables (method 0) are supported");
+            "content stream uses an unsupported compression method (" + std::to_string(method) +
+                ")");
     }
     if (nbits < 4 || nbits > 6) {
         return Result<std::vector<std::byte>>::fail(
@@ -143,11 +167,42 @@ Result<std::vector<std::byte>> inflate_content(std::span<const std::byte> stream
             break;
         }
 
-        if (flag == 0u) { // literal: a raw 8-bit byte
-            const auto literal = static_cast<std::uint8_t>(br.bits() & 0xFFu);
-            br.consume(8);
-            if (br.failed()) {
-                break;
+        if (flag == 0u) { // literal
+            std::uint8_t literal = 0;
+            if (method == 1u) {
+                // Method-1 literals are Huffman-coded: accumulate the LSB-first
+                // prefix one bit at a time until it resolves to a symbol.
+                const std::array<std::int16_t, 1u << (kLitMaxLen + 1)>& dec = lit_decode_table();
+                std::uint32_t acc = 0;
+                int len = 0;
+                int sym = -1;
+                while (len < kLitMaxLen) {
+                    const std::uint32_t bit = br.bits() & 1u;
+                    br.consume(1);
+                    if (br.failed()) {
+                        break;
+                    }
+                    acc |= bit << len;
+                    ++len;
+                    sym = dec[(static_cast<std::size_t>(1) << len) | acc];
+                    if (sym >= 0) {
+                        break;
+                    }
+                }
+                if (br.failed()) {
+                    break;
+                }
+                if (sym < 0) {
+                    diags.warn("content stream has an invalid method-1 literal code; stopping");
+                    break;
+                }
+                literal = static_cast<std::uint8_t>(sym);
+            } else { // method 0: a raw 8-bit byte
+                literal = static_cast<std::uint8_t>(br.bits() & 0xFFu);
+                br.consume(8);
+                if (br.failed()) {
+                    break;
+                }
             }
             out.push_back(static_cast<std::byte>(literal));
             continue;

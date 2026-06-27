@@ -20,34 +20,27 @@ This is a digital-preservation project first. Expect rough edges; please contrib
 
 ## Status
 
-Rescore is early and under active development.
+Rescore reads the common-notation content of a legacy `.mus` file and converts it to MusicXML 4.0.
 
-- **Works today:**
-  - Detects the `.mus` container and era from its embedded signatures.
-  - Reads and decompresses the document's internal data structures.
-  - Extracts **key signature, time signature, and clef**, including compound meters (6/8, 9/8) and treble/bass clefs.
-  - Emits `score-partwise` **MusicXML 4.0**.
-- **In progress:** per-note data (pitch, duration, and accidentals) so that converted measures carry their notes, not just their attributes. This is the next milestone; until it lands, output carries each measure's key/time/clef.
+**Supported today:**
 
----
+- Detects the `.mus` container and era from its embedded signatures, and decompresses the document's internal data structures.
+- **Notes:** pitch (name, octave, accidental), duration (whole through 16th, dotted), chords, and rests.
+- **Measure attributes:** key signature, time signature (including compound meters such as 6/8 and 9/8), and clef (treble, bass, alto, tenor).
+- **Structure:** multiple measures with correct barring, multiple staves and parts (such as a piano grand staff), and multiple voices per staff.
+- **Marks:** ties, tuplets, slurs, articulations (staccato, accent, tenuto, marcato, fermata), lyrics with hyphenation, and dynamics (p, f, mp, mf, and so on, plus crescendo and diminuendo hairpins).
+- Emits `score-partwise` **MusicXML 4.0**.
+- An optional desktop **GUI**: drag a `.mus` file in and get a `.musicxml` next to it.
 
-## What the first release targets
+**Not yet handled:** grace notes, ornaments, beaming detail, chord symbols, repeats and endings, page layout / fonts / engraving, and MIDI/PDF/SVG export. Semantic fidelity comes first: the goal is that a musician opens the result and recognizes their piece.
 
-- One part, one staff, one voice.
-- Key signature, time signature, clef (treble and bass at minimum).
-- Pitch: note name + octave + accidental (sharp / flat / natural).
-- Rhythm: whole through 16th notes and rests, including dotted.
-- Chords (multiple notes in one entry) and basic ties.
-- Multiple measures in sequence, with correct barring.
-- Output: `score-partwise` MusicXML 4.0.
-
-Deliberately out of scope for the first release: multiple staves/parts, multiple voices, tuplets, grace notes, beaming detail, slurs/articulations/dynamics/ornaments, lyrics, chord symbols, repeats and endings, all engraving/layout/fonts, MIDI/PDF/SVG export, and a GUI. Semantic fidelity comes first: the goal is that a musician recognizes their piece.
+This is a digital-preservation project; please contribute sample files and bug reports.
 
 ---
 
 ## Build
 
-Rescore is C++20 and builds with CMake (>= 3.24) on Windows, macOS, and Linux, with no third-party dependencies.
+Rescore is C++20 and builds with CMake (>= 3.24) on Windows, macOS, and Linux. The converter and CLI have no third-party dependencies; the test suite and the optional GUI fetch theirs automatically via CMake.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -55,6 +48,8 @@ cmake --build build --config Release
 ```
 
 The `rescore` executable is written to `build/bin/` (under a per-config subfolder, e.g. `build/bin/Release/`, for multi-config generators such as Visual Studio).
+
+To build the desktop GUI too, add `-DRESCORE_BUILD_GUI=ON`. For a dependency-free build of just the converter, add `-DRESCORE_BUILD_TESTS=OFF`.
 
 ---
 

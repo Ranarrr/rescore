@@ -53,6 +53,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 # ----------------------------------------------------------------------------
 # Project options (see CONVENTIONS).
 # ----------------------------------------------------------------------------
+option(RESCORE_BUILD_TESTS "Build the Rescore test suite (Catch2 v3)" ON)
+option(RESCORE_BUILD_GUI "Build the Rescore desktop GUI (Dear ImGui + GLFW)" OFF)
 option(RESCORE_ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(RESCORE_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(RESCORE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
@@ -69,6 +71,21 @@ include(cmake/Sanitizers.cmake)
 # ----------------------------------------------------------------------------
 add_subdirectory(rescore-core)
 add_subdirectory(rescore-cli)
+
+# ----------------------------------------------------------------------------
+# Desktop GUI (optional; fetches GLFW + Dear ImGui + nfd via FetchContent).
+# ----------------------------------------------------------------------------
+if(RESCORE_BUILD_GUI)
+    add_subdirectory(rescore-gui)
+endif()
+
+# ----------------------------------------------------------------------------
+# Tests (Catch2 v3, pulled via FetchContent on a fresh checkout).
+# ----------------------------------------------------------------------------
+if(RESCORE_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 # ----------------------------------------------------------------------------
 # Installation: export the rescore CLI (and its static core via the export set).

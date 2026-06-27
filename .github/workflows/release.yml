@@ -1,0 +1,79 @@
+name: release
+
+# Build the CLI on Windows, macOS, and Linux and attach the binaries to a
+# GitHub Release. Triggered by pushing a version tag (e.g. v0.1.0), or manually
+# (workflow_dispatch) to validate the builds without publishing a release.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build-${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: rescore-windows-x86_64.zip
+          - os: ubuntu-latest
+            asset: rescore-linux-x86_64.tar.gz
+          - os: macos-latest
+            asset: rescore-macos-arm64.dmg
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DRESCORE_WARNINGS_AS_ERRORS=OFF
+
+      - name: Build
+        run: cmake --build build --config Release --target rescore
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path build/bin/Release/rescore.exe -DestinationPath ${{ matrix.asset }}
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        run: tar -czf "${{ matrix.asset }}" -C build/bin rescore
+
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p dmgroot
+          cp build/bin/rescore dmgroot/rescore
+          hdiutil create -volname Rescore -srcfolder dmgroot -ov -format UDZO "${{ matrix.asset }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: publish-release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --title "Rescore ${{ github.ref_name }}" \
+            --generate-notes \
+            $(find dist -type f)

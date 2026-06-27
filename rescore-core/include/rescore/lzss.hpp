@@ -27,9 +27,8 @@ namespace rescore::lzss {
 inline constexpr std::size_t kDefaultMaxOutput = 64u * 1024u * 1024u;
 
 /// Decompress an Enigma content stream. `stream` must begin at the 3-byte stream
-/// header `[method][nbits][initbits]`. Only the static-table form (method 0, the
-/// form Windows-era files use) is decoded; a method-1 (dynamic-table) stream
-/// returns a NotImplemented error.
+/// header `[method][nbits][initbits]`. Both stream methods are supported: method 0
+/// (raw 8-bit literals) and method 1 (literals Huffman-coded with a static table).
 ///
 /// Returns the decompressed bytes. A truncated or internally inconsistent stream
 /// yields the bytes decoded so far plus a Warning diagnostic (best-effort
