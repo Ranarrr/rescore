@@ -131,6 +131,296 @@ private:
     bool failed_{false};
 };
 
+// --- DEFLATE / zlib inflate (RFC 1950 / 1951) --------------------------------
+// Finale 2010+ files zlib-compress each chunk (body begins with the CMF byte
+// 0x78) instead of the custom LZSS above. This is a self-contained, bounds-safe
+// canonical-Huffman DEFLATE so the core keeps its no-third-party-dependency
+// posture; it caps output to guard against decompression bombs.
+
+constexpr int kMaxBits = 15;
+
+struct Huffman {
+    std::array<std::int16_t, kMaxBits + 1> count{};
+    std::array<std::int16_t, 288> symbol{};
+};
+
+class InflateState {
+public:
+    InflateState(std::span<const std::byte> in, std::size_t max_output)
+        : in_(in), max_output_(max_output) {}
+
+    /// Read `need` (0..15) bits LSB-first. Latches `failed_` on input exhaustion.
+    int bits(int need) {
+        std::uint32_t val = bitbuf_;
+        while (bitcnt_ < need) {
+            if (inpos_ >= in_.size()) {
+                failed_ = true;
+                return 0;
+            }
+            val |= static_cast<std::uint32_t>(static_cast<std::uint8_t>(in_[inpos_++])) << bitcnt_;
+            bitcnt_ += 8;
+        }
+        bitbuf_ = val >> need;
+        bitcnt_ -= need;
+        return static_cast<int>(val & ((1u << static_cast<unsigned>(need)) - 1u));
+    }
+
+    std::span<const std::byte> in_;
+    std::size_t inpos_{0};
+    std::uint32_t bitbuf_{0};
+    int bitcnt_{0};
+    std::vector<std::byte> out_;
+    std::size_t max_output_;
+    bool failed_{false};
+};
+
+/// Build a canonical Huffman decoder from code lengths. 0 = complete, <0 = the
+/// code is over-subscribed (invalid), >0 = incomplete.
+int hz_construct(Huffman& h, const int* length, int n) {
+    for (int len = 0; len <= kMaxBits; ++len) {
+        h.count[len] = 0;
+    }
+    for (int sym = 0; sym < n; ++sym) {
+        ++h.count[length[sym]];
+    }
+    if (h.count[0] == n) {
+        return 0;
+    }
+    int left = 1;
+    for (int len = 1; len <= kMaxBits; ++len) {
+        left <<= 1;
+        left -= h.count[len];
+        if (left < 0) {
+            return left;
+        }
+    }
+    std::array<int, kMaxBits + 1> offs{};
+    offs[1] = 0;
+    for (int len = 1; len < kMaxBits; ++len) {
+        offs[len + 1] = offs[len] + h.count[len];
+    }
+    for (int sym = 0; sym < n; ++sym) {
+        if (length[sym] != 0) {
+            h.symbol[offs[length[sym]]++] = static_cast<std::int16_t>(sym);
+        }
+    }
+    return left;
+}
+
+/// Decode one symbol from the bit stream using table `h`; -1 on error.
+int hz_decode(InflateState& s, const Huffman& h) {
+    int code = 0;
+    int first = 0;
+    int index = 0;
+    for (int len = 1; len <= kMaxBits; ++len) {
+        code |= s.bits(1);
+        if (s.failed_) {
+            return -1;
+        }
+        const int count = h.count[len];
+        if (code - count < first) {
+            return h.symbol[index + (code - first)];
+        }
+        index += count;
+        first += count;
+        first <<= 1;
+        code <<= 1;
+    }
+    return -1;
+}
+
+/// Decode the literal/length + distance symbols of one block into `out_`.
+bool hz_codes(InflateState& s, const Huffman& lencode, const Huffman& distcode) {
+    static const int lens[29] = {3,  4,  5,  6,  7,  8,  9,  10,  11,  13,  15,  17,  19, 23, 27,
+                                 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+    static const int lext[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
+                                 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+    static const int dists[30] = {1,    2,    3,    4,    5,    7,    9,    13,   17,    25,
+                                  33,   49,   65,   97,   129,  193,  257,  385,  513,   769,
+                                  1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+    static const int dext[30] = {0, 0, 0,  0,  1,  1,  2,  2,  3,  3,  4,  4,  5,  5,  6,
+                                 6, 7, 7,  8,  8,  9,  9, 10, 10, 11, 11, 12, 12, 13, 13};
+    for (;;) {
+        int symbol = hz_decode(s, lencode);
+        if (symbol < 0) {
+            return false;
+        }
+        if (symbol == 256) {
+            return true; // end of block
+        }
+        if (symbol < 256) {
+            if (s.out_.size() >= s.max_output_) {
+                return false;
+            }
+            s.out_.push_back(static_cast<std::byte>(static_cast<std::uint8_t>(symbol)));
+            continue;
+        }
+        symbol -= 257;
+        if (symbol >= 29) {
+            return false;
+        }
+        const int length = lens[symbol] + s.bits(lext[symbol]);
+        const int dsym = hz_decode(s, distcode);
+        if (dsym < 0 || dsym >= 30) {
+            return false;
+        }
+        const std::size_t dist = static_cast<std::size_t>(dists[dsym] + s.bits(dext[dsym]));
+        if (s.failed_ || dist > s.out_.size()) {
+            return false;
+        }
+        if (s.out_.size() + static_cast<std::size_t>(length) > s.max_output_) {
+            return false;
+        }
+        const std::size_t src = s.out_.size() - dist;
+        for (int i = 0; i < length; ++i) {
+            const std::byte b = s.out_[src + static_cast<std::size_t>(i)];
+            s.out_.push_back(b);
+        }
+    }
+}
+
+bool hz_stored(InflateState& s) {
+    s.bitbuf_ = 0; // discard bits up to the next byte boundary
+    s.bitcnt_ = 0;
+    if (s.inpos_ + 4 > s.in_.size()) {
+        return false;
+    }
+    const auto b = [&s](std::size_t i) {
+        return static_cast<unsigned>(static_cast<std::uint8_t>(s.in_[i]));
+    };
+    const unsigned len = b(s.inpos_) | (b(s.inpos_ + 1) << 8);
+    const unsigned nlen = b(s.inpos_ + 2) | (b(s.inpos_ + 3) << 8);
+    s.inpos_ += 4;
+    if ((len ^ 0xFFFFu) != nlen || s.inpos_ + len > s.in_.size() ||
+        s.out_.size() + len > s.max_output_) {
+        return false;
+    }
+    for (unsigned i = 0; i < len; ++i) {
+        s.out_.push_back(s.in_[s.inpos_++]);
+    }
+    return true;
+}
+
+bool hz_fixed(InflateState& s) {
+    std::array<int, 288> litlen{};
+    for (int i = 0; i < 144; ++i) {
+        litlen[static_cast<std::size_t>(i)] = 8;
+    }
+    for (int i = 144; i < 256; ++i) {
+        litlen[static_cast<std::size_t>(i)] = 9;
+    }
+    for (int i = 256; i < 280; ++i) {
+        litlen[static_cast<std::size_t>(i)] = 7;
+    }
+    for (int i = 280; i < 288; ++i) {
+        litlen[static_cast<std::size_t>(i)] = 8;
+    }
+    std::array<int, 30> distlen{};
+    for (int& d : distlen) {
+        d = 5;
+    }
+    Huffman lencode;
+    Huffman distcode;
+    hz_construct(lencode, litlen.data(), 288);
+    hz_construct(distcode, distlen.data(), 30);
+    return hz_codes(s, lencode, distcode);
+}
+
+bool hz_dynamic(InflateState& s) {
+    static const int order[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
+    const int hlit = s.bits(5) + 257;
+    const int hdist = s.bits(5) + 1;
+    const int hclen = s.bits(4) + 4;
+    if (s.failed_ || hlit > 286 || hdist > 30) {
+        return false;
+    }
+    std::array<int, 19> clen{};
+    for (int i = 0; i < hclen; ++i) {
+        clen[static_cast<std::size_t>(order[i])] = s.bits(3);
+    }
+    if (s.failed_) {
+        return false;
+    }
+    Huffman codelen;
+    if (hz_construct(codelen, clen.data(), 19) < 0) {
+        return false;
+    }
+    std::array<int, 288 + 32> lengths{};
+    int index = 0;
+    const int total = hlit + hdist;
+    while (index < total) {
+        const int sym = hz_decode(s, codelen);
+        if (sym < 0) {
+            return false;
+        }
+        if (sym < 16) {
+            lengths[static_cast<std::size_t>(index++)] = sym;
+            continue;
+        }
+        int repeat = 0;
+        int value = 0;
+        if (sym == 16) {
+            if (index == 0) {
+                return false;
+            }
+            value = lengths[static_cast<std::size_t>(index - 1)];
+            repeat = 3 + s.bits(2);
+        } else if (sym == 17) {
+            repeat = 3 + s.bits(3);
+        } else {
+            repeat = 11 + s.bits(7);
+        }
+        if (s.failed_ || index + repeat > total) {
+            return false;
+        }
+        while (repeat-- > 0) {
+            lengths[static_cast<std::size_t>(index++)] = value;
+        }
+    }
+    Huffman lencode;
+    Huffman distcode;
+    if (hz_construct(lencode, lengths.data(), hlit) < 0) {
+        return false;
+    }
+    hz_construct(distcode, lengths.data() + hlit, hdist);
+    return hz_codes(s, lencode, distcode);
+}
+
+Result<std::vector<std::byte>> inflate_zlib(std::span<const std::byte> stream, Diagnostics& diags,
+                                            std::size_t max_output) {
+    if (stream.size() < 2) {
+        return Result<std::vector<std::byte>>::fail(ErrorCode::UnexpectedEof,
+                                                    "zlib stream too short for its header");
+    }
+    if ((static_cast<unsigned>(static_cast<std::uint8_t>(stream[0])) & 0x0Fu) != 8u) {
+        return Result<std::vector<std::byte>>::fail(ErrorCode::NotImplemented,
+                                                    "zlib stream compression method is not deflate");
+    }
+    InflateState s(stream, max_output);
+    s.inpos_ = 2; // skip the 2-byte zlib header (CMF, FLG); the trailing adler32 is ignored
+    bool last = false;
+    while (!last && s.out_.size() < max_output) {
+        last = s.bits(1) != 0;
+        const int type = s.bits(2);
+        if (s.failed_) {
+            break;
+        }
+        bool ok = false;
+        if (type == 0) {
+            ok = hz_stored(s);
+        } else if (type == 1) {
+            ok = hz_fixed(s);
+        } else if (type == 2) {
+            ok = hz_dynamic(s);
+        }
+        if (!ok) {
+            diags.warn("zlib (DEFLATE) stream is corrupt or unsupported; stopping decode");
+            break;
+        }
+    }
+    return Result<std::vector<std::byte>>::ok(std::move(s.out_));
+}
+
 } // namespace
 
 Result<std::vector<std::byte>> inflate_content(std::span<const std::byte> stream,
@@ -142,6 +432,12 @@ Result<std::vector<std::byte>> inflate_content(std::span<const std::byte> stream
     const auto method = static_cast<unsigned>(static_cast<std::uint8_t>(stream[0]));
     const int nbits = static_cast<int>(static_cast<std::uint8_t>(stream[1]));
     const auto init = static_cast<std::uint32_t>(static_cast<std::uint8_t>(stream[2]));
+
+    // Finale 2010+ chunks are zlib (RFC 1950) deflate, whose first byte is the CMF
+    // (0x78 for the 32 KB-window deflate they use). Dispatch to the inflater.
+    if (method == 0x78u) {
+        return inflate_zlib(stream, diags, max_output);
+    }
 
     if (method != 0 && method != 1) {
         return Result<std::vector<std::byte>>::fail(

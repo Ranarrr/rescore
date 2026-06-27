@@ -74,10 +74,18 @@ inline constexpr std::uint16_t kDetailTagSmartShapeEntry = 0x4578; // 'xE'
 inline constexpr std::uint16_t kDetailTagArtic = 0x494D;           // 'MI'
 inline constexpr std::uint16_t kDetailTagLyricEntry = 0x7665;      // 'ev'
 
-/// Chunk types in the .mus chunk chain.
+/// Chunk types in the .mus chunk chain (2003-era / custom-LZSS layout).
 inline constexpr std::uint16_t kEntryChunkType = 17;   // note entries
 inline constexpr std::uint16_t kDetailsChunkType = 16; // Details pool (frame holders)
 inline constexpr std::uint16_t kTextChunkType = 18;    // Enigma Text pool (verse text)
+
+/// Finale 2010+ (zlib era) renumbers the chunks. The entry and text pools keep the
+/// SAME record format; only the chunk type number and the codec (zlib) differ, so
+/// the readers accept both and the decompressor auto-detects the codec.
+inline constexpr std::uint16_t kEntryChunkType2011 = 22;
+inline constexpr std::uint16_t kTextChunkType2011 = 23;
+inline constexpr std::uint16_t kOthersChunkType2011 = 26;  // measure/staff specs (TLV)
+inline constexpr std::uint16_t kDetailsChunkType2011 = 27; // per-cell / per-entry detail (TLV)
 
 /// Walk the chunk chain and decode the note entries from the entry chunk(s).
 /// Returns the entries (possibly empty, with a diagnostic). Never throws.
@@ -101,6 +109,22 @@ inline constexpr std::uint16_t kTextChunkType = 18;    // Enigma Text pool (vers
 /// Returns the concatenated text of all type-18 chunks (possibly empty).
 [[nodiscard]] Result<std::string> read_text_pool(std::span<const std::byte> mus,
                                                  Diagnostics& diags);
+
+/// Document attributes recovered from a Finale 2010+ (zlib) type-26 Others pool:
+/// the (single) key + time signature and the active-staff names. The pool is one
+/// variable-length TLV stream [tag:2][cmper:2][inci:2][dlen:2][data:dlen][6 pad].
+/// `found` is false when the chunk is absent (e.g. a 2003-era file).
+struct Doc2011 {
+    bool found{false};
+    std::uint16_t key_field{0}; // raw key word (low byte = signed fifths, bits 13-8 = bank)
+    int beats{4};               // time-signature numerator
+    int divbeat{1024};          // EDU per beat (quarter = 1024)
+    std::vector<std::string> staff_names; // active-staff names in cmper order
+};
+
+/// Read the document attributes from a Finale 2010+ type-26 Others pool. Returns a
+/// Doc2011 with `found == false` if there is no such chunk. Never throws.
+[[nodiscard]] Result<Doc2011> read_doc_2011(std::span<const std::byte> mus, Diagnostics& diags);
 
 } // namespace rescore::container
 

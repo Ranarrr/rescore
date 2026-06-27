@@ -76,6 +76,19 @@ TEST_CASE("entries: a single G4 quarter note decodes", "[entries]") {
     CHECK(notes[0].notes[0].alter == 0);
 }
 
+TEST_CASE("entries: a Finale 2011 (zlib) file decodes its entry pool", "[entries][zlib]") {
+    const auto buf = load_fixture("Tomkins_-_Out_of_the_deep.mus");
+    if (!buf) {
+        SKIP("fixture Tomkins_-_Out_of_the_deep.mus not available");
+    }
+    rescore::Diagnostics diags;
+    const auto res = read_entry_pool(*buf, diags);
+    REQUIRE(res.has_value());
+    // This Finale 2011 file's entry pool has 571 records (ids 1..572); decoding
+    // them at all proves the zlib inflater + the type-22 entry path.
+    CHECK(res.value().size() == 571);
+}
+
 TEST_CASE("entries: an ascending quarter run gives four stepwise pitches", "[entries]") {
     const auto buf = load_fixture("run-cdef-q.mus");
     if (!buf) {
@@ -323,4 +336,21 @@ TEST_CASE("convert: a per-staff dynamic routes to its own part", "[convert][dyna
     REQUIRE(p != std::string::npos);
     CHECK(f < p2); // forte stays in the first part
     CHECK(p > p2); // piano lands in the second part
+}
+
+TEST_CASE("convert: a Finale 2011 (zlib) file converts to MusicXML with notes",
+          "[convert][zlib]") {
+    const auto buf = load_fixture("Tomkins_-_Out_of_the_deep.mus");
+    if (!buf) {
+        SKIP("fixture Tomkins_-_Out_of_the_deep.mus not available");
+    }
+    rescore::Diagnostics diags;
+    const auto res = rescore::convert_mus_to_musicxml(*buf, diags);
+    REQUIRE(res.has_value());
+    const std::string& xml = res.value();
+    // The late-era zlib path builds one part per entry-chain head; this anthem has
+    // four active voices and real pitched notes survive the conversion.
+    REQUIRE_THAT(xml, ContainsSubstring("<part id=\"P1\""));
+    REQUIRE_THAT(xml, ContainsSubstring("<part id=\"P4\""));
+    REQUIRE_THAT(xml, ContainsSubstring("<step>"));
 }

@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -688,6 +689,148 @@ decode_measure_directions(const std::vector<container::OtherRecord>& others) {
     return dirs;
 }
 
+/// Pick a clef for a voice from its average notated pitch: low voices read better
+/// in bass clef. A fallback for late-era (zlib) files until the real per-staff
+/// clef from the type-26 staff spec is decoded.
+[[nodiscard]] ir::Clef clef_for_chain(const std::vector<container::EntryRecord>& chain) {
+    long long sum = 0;
+    long long n = 0;
+    for (const auto& e : chain) {
+        for (const auto& note : e.notes) {
+            sum += note.step_from_c4;
+            ++n;
+        }
+    }
+    if (n > 0 && static_cast<double>(sum) / static_cast<double>(n) < -2.0) {
+        return ir::Clef{ir::ClefSign::F, 4}; // bass
+    }
+    return ir::Clef{ir::ClefSign::G, 2}; // treble
+}
+
+/// Build a score when there are no 2003-era measure specs / frame holders, e.g. a
+/// Finale 2010+ (zlib) file whose Others/Details pools use the new framing we do
+/// not decode yet. Each entry-chain head (an entry that nothing links to) becomes
+/// one part; the chain is split into 4/4 measures (the common case), padded with
+/// rests, under default C-major / treble attributes. The notes survive even
+/// before the late-era measure/staff specs are decoded.
+[[nodiscard]] Result<ir::Score>
+build_score_from_chains(const std::vector<container::EntryRecord>& entries,
+                        const container::Doc2011& doc, Diagnostics& diags) {
+    using namespace ir;
+    std::map<std::uint16_t, const container::EntryRecord*> by_id;
+    std::set<std::uint16_t> linked;
+    for (const auto& e : entries) {
+        by_id.emplace(e.id, &e);
+        if (e.next_id != 0) {
+            linked.insert(e.next_id);
+        }
+    }
+    std::vector<std::uint16_t> heads;
+    for (const auto& e : entries) {
+        if (linked.find(e.id) == linked.end()) {
+            heads.push_back(e.id);
+        }
+    }
+    std::sort(heads.begin(), heads.end());
+    if (heads.empty()) {
+        return Result<Score>::fail(ErrorCode::NotImplemented,
+                                   "no entry-chain heads found; cannot build a score");
+    }
+
+    const auto chain_from = [&by_id](std::uint16_t first) {
+        std::vector<container::EntryRecord> chain;
+        std::uint16_t cur = first;
+        int guard = 0;
+        while (cur != 0 && guard++ < 65536) {
+            const auto it = by_id.find(cur);
+            if (it == by_id.end()) {
+                break;
+            }
+            chain.push_back(*it->second);
+            cur = it->second->next_id;
+        }
+        return chain;
+    };
+
+    // One key + time for the whole piece (Finale 2010+ stores them once per active
+    // staff, not per measure); default to 4/4 C major when the Others pool is absent.
+    const TimeSignature time =
+        doc.found ? derive_time_signature(doc.beats, doc.divbeat) : TimeSignature{4, 4};
+    const KeySignature key =
+        doc.found ? key_from_field(doc.key_field) : KeySignature{0, KeySignature::Mode::Major};
+    const Edu bar = std::max<Edu>(measure_capacity(time), 1);
+
+    // Follow each head's chain; size every part to the longest voice.
+    std::vector<std::vector<container::EntryRecord>> chains;
+    std::size_t num_measures = 1;
+    for (const std::uint16_t head : heads) {
+        std::vector<container::EntryRecord> chain = chain_from(head);
+        Edu total = 0;
+        for (const auto& e : chain) {
+            total += e.duration_edu;
+        }
+        const auto bars = static_cast<std::size_t>((total + bar - 1) / bar);
+        num_measures = std::max(num_measures, std::max<std::size_t>(bars, 1));
+        chains.push_back(std::move(chain));
+    }
+
+    // Name the voices: a constant-pitch chain is the percussion click-track; the
+    // melodic chains take the decoded staff names, highest pitch first.
+    std::vector<std::string> part_names(chains.size());
+    {
+        std::vector<std::pair<double, std::size_t>> melodic; // (average pitch, chain index)
+        for (std::size_t i = 0; i < chains.size(); ++i) {
+            long long sum = 0;
+            long long n = 0;
+            std::set<int> steps;
+            for (const auto& e : chains[i]) {
+                for (const auto& note : e.notes) {
+                    sum += note.step_from_c4;
+                    ++n;
+                    steps.insert(note.step_from_c4);
+                }
+            }
+            if (n >= 4 && steps.size() == 1) {
+                part_names[i] = "Percussion"; // constant-pitch click-track
+            } else if (n > 0) {
+                melodic.emplace_back(static_cast<double>(sum) / static_cast<double>(n), i);
+            }
+        }
+        std::sort(melodic.begin(), melodic.end(),
+                  [](const auto& a, const auto& b) { return a.first > b.first; });
+        for (std::size_t k = 0; k < melodic.size() && k < doc.staff_names.size(); ++k) {
+            part_names[melodic[k].second] = doc.staff_names[k];
+        }
+    }
+
+    const EntryFeatures feats; // late-era slur/artic/lyric details not decoded yet
+
+    Score score;
+    for (std::size_t i = 0; i < chains.size(); ++i) {
+        const Clef clef = clef_for_chain(chains[i]);
+        Staff staff;
+        staff.initial_clef = clef;
+        for (std::size_t m = 0; m < num_measures; ++m) {
+            Measure measure;
+            if (m == 0) {
+                measure.key = key;
+                measure.time = time;
+                measure.clef = clef;
+            }
+            staff.measures.push_back(std::move(measure));
+        }
+        place_voice(staff, chains[i], feats, diags);
+        Part part;
+        part.id = "P" + std::to_string(i + 1);
+        part.name = part_names[i].empty() ? ("Part " + std::to_string(i + 1)) : part_names[i];
+        part.staves.push_back(std::move(staff));
+        score.parts.push_back(std::move(part));
+    }
+    diags.info("built a score from " + std::to_string(heads.size()) +
+               " entry-chain heads (no measure specs; defaulted to 4/4 C major)");
+    return Result<Score>::ok(std::move(score));
+}
+
 /// Layer 2: build an ir::Score from the decoded Others, note entries, and frame
 /// holders. Each staff becomes one Part: its clef comes from its staff spec, and
 /// its notes are the entry chain reachable from its frame holder, then placed
@@ -697,7 +840,7 @@ build_score(const std::vector<container::OtherRecord>& others,
             const std::vector<container::EntryRecord>& entries,
             const std::vector<container::FrameHolder>& holders,
             const std::vector<container::DetailRecord>& details, const std::string& verse_text,
-            Diagnostics& diags) {
+            const container::Doc2011& doc2011, Diagnostics& diags) {
     using namespace ir;
 
     const EntryFeatures feats = decode_entry_features(others, details, verse_text);
@@ -710,6 +853,12 @@ build_score(const std::vector<container::OtherRecord>& others,
         }
     }
     if (measure_specs.empty()) {
+        // No 2003-era measure specs. If note entries are present (e.g. a Finale
+        // 2010+ zlib file whose Others pool uses the new framing), fall back to
+        // building a score from the entry-chain heads so the notes still convert.
+        if (!entries.empty()) {
+            return build_score_from_chains(entries, doc2011, diags);
+        }
         return Result<Score>::fail(ErrorCode::NotImplemented,
                                    "no measure-spec records found; cannot build a score");
     }
@@ -912,10 +1061,12 @@ Result<std::string> convert_mus_to_musicxml(std::span<const std::byte> data, Dia
         details ? details.value() : std::vector<container::DetailRecord>{};
     Result<std::string> text = container::read_text_pool(data, diags);
     const std::string verse_text = text ? text.value() : std::string{};
+    Result<container::Doc2011> doc = container::read_doc_2011(data, diags);
+    const container::Doc2011 doc2011 = doc ? doc.value() : container::Doc2011{};
 
     // Layer 2: build the IR (one part per staff, with notes).
-    Result<ir::Score> score =
-        build_score(others.value(), entry_list, holder_list, detail_list, verse_text, diags);
+    Result<ir::Score> score = build_score(others.value(), entry_list, holder_list, detail_list,
+                                          verse_text, doc2011, diags);
     if (!score) {
         return Result<std::string>::fail(score.code(), score.message());
     }

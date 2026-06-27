@@ -111,6 +111,19 @@ void text_centered(const char* text, float scale = 1.0f) {
     }
 }
 
+// Render the status line: centred when it fits on one line, otherwise wrapped
+// within the window so a long error message stays inside the fixed-size window
+// instead of running off the right edge.
+void text_wrapped(const char* text) {
+    if (ImGui::CalcTextSize(text).x < ImGui::GetContentRegionAvail().x) {
+        text_centered(text);
+        return;
+    }
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextUnformatted(text);
+    ImGui::PopTextWrapPos();
+}
+
 // Load a pleasant system UI font; fall back to the built-in font if none is found.
 void load_font(ImGuiIO& io) {
     static const char* const kCandidates[] = {
@@ -185,8 +198,18 @@ void render_ui() {
         const ImVec4 col = g_app.ok ? ImVec4(0.13f, 0.55f, 0.24f, 1.0f)
                                     : ImVec4(0.78f, 0.20f, 0.16f, 1.0f);
         ImGui::PushStyleColor(ImGuiCol_Text, col);
-        text_centered(g_app.status.c_str());
+        text_wrapped(g_app.status.c_str());
         ImGui::PopStyleColor();
+
+        // On an error, offer a one-click copy so the message can be shared / pasted.
+        if (!g_app.ok) {
+            ImGui::Dummy(ImVec2(0.0f, 8.0f));
+            const float btn_w = 200.0f;
+            ImGui::SetCursorPosX((ImGui::GetWindowWidth() - btn_w) * 0.5f);
+            if (ImGui::Button("Copy error message", ImVec2(btn_w, 0.0f))) {
+                ImGui::SetClipboardText(g_app.status.c_str());
+            }
+        }
     }
 
     // --- footer ------------------------------------------------------------

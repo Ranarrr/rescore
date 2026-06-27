@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -57,7 +58,7 @@ Result<std::vector<EntryRecord>> read_entry_pool(std::span<const std::byte> mus,
         if (size > mus.size() || off > mus.size() - size) {
             break;
         }
-        if (type != kEntryChunkType) {
+        if (type != kEntryChunkType && type != kEntryChunkType2011) {
             off += size;
             continue;
         }
@@ -258,7 +259,7 @@ Result<std::string> read_text_pool(std::span<const std::byte> mus, Diagnostics& 
         if (size > mus.size() || off > mus.size() - size) {
             break;
         }
-        if (type != kTextChunkType) {
+        if (type != kTextChunkType && type != kTextChunkType2011) {
             off += size;
             continue;
         }
@@ -278,6 +279,96 @@ Result<std::string> read_text_pool(std::span<const std::byte> mus, Diagnostics& 
         off += size;
     }
     return Result<std::string>::ok(std::move(text));
+}
+
+Result<Doc2011> read_doc_2011(std::span<const std::byte> mus, Diagnostics& diags) {
+    const auto u8m = [&mus](std::size_t at) -> unsigned {
+        return std::to_integer<unsigned>(mus[at]);
+    };
+
+    Doc2011 doc;
+    std::size_t off = kChainStart;
+    while (off + kChunkHeaderSize <= mus.size()) {
+        const std::uint32_t type = u8m(off) | (u8m(off + 1) << 8);
+        const std::uint32_t size =
+            u8m(off + 2) | (u8m(off + 3) << 8) | (u8m(off + 4) << 16) | (u8m(off + 5) << 24);
+        if (size < kChunkHeaderSize || size > mus.size() || off > mus.size() - size) {
+            break;
+        }
+        if (type != kOthersChunkType2011) {
+            off += size;
+            continue;
+        }
+
+        const std::span<const std::byte> stream = mus.subspan(
+            off + kChunkHeaderSize, static_cast<std::size_t>(size) - kChunkHeaderSize);
+        Result<std::vector<std::byte>> inflated = lzss::inflate_content(stream, diags);
+        if (!inflated) {
+            diags.warn("2010+ Others pool could not be decompressed; attributes defaulted");
+            break;
+        }
+        const std::vector<std::byte>& p = inflated.value();
+        const auto u16 = [&p](std::size_t at) -> unsigned {
+            return std::to_integer<unsigned>(p[at]) | (std::to_integer<unsigned>(p[at + 1]) << 8);
+        };
+
+        // One variable-length TLV stream: [tag:2][cmper:2][inci:2][dlen:2][data][6 zero pad].
+        std::map<unsigned, std::pair<int, int>> timesig_library; // index -> (beats, divbeat)
+        std::map<unsigned, std::string> names;                   // staff cmper -> name
+        unsigned ts_index = 0;
+        bool got_staff = false;
+        std::size_t o = 0;
+        int guard = 0;
+        while (o + 8 <= p.size() && guard++ < 1000000) {
+            const unsigned tag = u16(o);
+            const unsigned cmper = u16(o + 2);
+            const unsigned dlen = u16(o + 6);
+            const std::size_t data = o + 8;
+            if (data + dlen + 6 > p.size()) {
+                break;
+            }
+            if (tag == 0x00ADu && dlen >= 6) { // TimeSig library: w1 = beats, w2 = divbeat EDU
+                timesig_library[cmper] = {static_cast<int>(u16(data + 2)),
+                                          static_cast<int>(u16(data + 4))};
+            } else if (tag == 0x00B9u && dlen >= 6 && !got_staff) { // per-staff key + time index
+                doc.key_field = static_cast<std::uint16_t>(u16(data));
+                ts_index = u16(data + 4);
+                got_staff = true;
+            } else if (tag == 0x00BAu && dlen > 2) { // staff name (after a 2-byte prefix)
+                std::string name;
+                for (std::size_t i = 2; i < dlen; ++i) {
+                    const auto ch = std::to_integer<unsigned>(p[data + i]);
+                    if (ch == 0) {
+                        break;
+                    }
+                    if (ch >= 0x20 && ch < 0x7F) {
+                        name.push_back(static_cast<char>(ch));
+                    }
+                }
+                if (!name.empty()) {
+                    names[cmper] = name;
+                }
+            }
+            o += 8 + dlen + 6;
+        }
+
+        if (got_staff) {
+            const auto it = timesig_library.find(ts_index);
+            if (it != timesig_library.end() && it->second.first > 0 && it->second.second > 0) {
+                doc.beats = it->second.first;
+                doc.divbeat = it->second.second;
+            }
+            doc.found = true;
+        }
+        for (const auto& kv : names) {
+            doc.staff_names.push_back(kv.second);
+        }
+        break; // only the first type-26 chunk
+    }
+
+    diags.info(doc.found ? "decoded 2010+ document attributes (key / time / staff names)"
+                         : "no 2010+ Others pool found");
+    return Result<Doc2011>::ok(std::move(doc));
 }
 
 } // namespace rescore::container
