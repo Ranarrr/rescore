@@ -353,4 +353,6 @@ TEST_CASE("convert: a Finale 2011 (zlib) file converts to MusicXML with notes",
     REQUIRE_THAT(xml, ContainsSubstring("<part id=\"P1\""));
     REQUIRE_THAT(xml, ContainsSubstring("<part id=\"P4\""));
     REQUIRE_THAT(xml, ContainsSubstring("<step>"));
+    // The work title is pulled from the first page-text block of the text pool.
+    REQUIRE_THAT(xml, ContainsSubstring("<work-title>OUT OF THE DEEP</work-title>"));
 }

@@ -16,6 +16,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -707,6 +708,140 @@ decode_measure_directions(const std::vector<container::OtherRecord>& others) {
     return ir::Clef{ir::ClefSign::G, 2}; // treble
 }
 
+// ----------------------------------------------------------------------------
+// Document metadata (work title) from the Enigma text pool.
+// ----------------------------------------------------------------------------
+
+/// Reduce one Enigma text block to its display text: the longest run of printable
+/// ASCII once command framing and insert glyphs are removed. Two command forms
+/// appear in the text pool - readable "^name(args)" (staff/group names) and binary
+/// "^<0x80+><control-bytes>" (page texts such as the title). Both are skipped, as
+/// are stray high-byte inserts (e.g. the page-number glyph that trails a title).
+[[nodiscard]] std::string clean_text_block(std::string_view seg) {
+    std::string best;
+    std::string cur;
+    const auto trim = [](const std::string& s) {
+        std::size_t a = 0;
+        std::size_t b = s.size();
+        while (a < b && s[a] == ' ') {
+            ++a;
+        }
+        while (b > a && s[b - 1] == ' ') {
+            --b;
+        }
+        return s.substr(a, b - a);
+    };
+    const auto flush = [&]() {
+        const std::string t = trim(cur);
+        if (t.size() > best.size()) {
+            best = t;
+        }
+        cur.clear();
+    };
+    const auto is_alpha = [](unsigned char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    };
+    std::size_t i = 0;
+    while (i < seg.size()) {
+        const auto c = static_cast<unsigned char>(seg[i]);
+        if (c == '^') {
+            flush();
+            if (i + 1 >= seg.size()) {
+                ++i;
+                continue;
+            }
+            if (is_alpha(static_cast<unsigned char>(seg[i + 1]))) {
+                // Readable command: skip the name, then an optional "(...)".
+                ++i;
+                while (i < seg.size() && is_alpha(static_cast<unsigned char>(seg[i]))) {
+                    ++i;
+                }
+                if (i < seg.size() && seg[i] == '(') {
+                    while (i < seg.size() && seg[i] != ')') {
+                        ++i;
+                    }
+                    if (i < seg.size()) {
+                        ++i; // past ')'
+                    }
+                }
+            } else {
+                // Binary command: skip '^', the command byte, and its control args.
+                i += 2;
+                while (i < seg.size() && static_cast<unsigned char>(seg[i]) < 0x20) {
+                    ++i;
+                }
+            }
+            continue;
+        }
+        if (c >= 0x20 && c < 0x7F) {
+            cur.push_back(static_cast<char>(c));
+        } else {
+            flush(); // a stray insert / control byte ends the current run
+        }
+        ++i;
+    }
+    flush();
+    return best;
+}
+
+/// Pull the work title from the Enigma text pool. Text is framed as
+/// "^block(id)...^end"; instrument and group names use the readable "^font(...)"
+/// form while page texts (title, composer, source) use the binary command form.
+/// The title is reliably the first binary-framed page-text block with alphabetic
+/// content, so that is what we return. Composer/subtitle disambiguation needs the
+/// page-text position records and is deferred. Returns "" when nothing qualifies.
+[[nodiscard]] std::string extract_work_title(const std::string& pool,
+                                             const std::vector<std::string>& staff_names) {
+    const std::string head = "^block(";
+    std::size_t pos = 0;
+    while ((pos = pool.find(head, pos)) != std::string::npos) {
+        const std::size_t id_start = pos + head.size();
+        const std::size_t close = pool.find(')', id_start);
+        if (close == std::string::npos) {
+            break;
+        }
+        const std::size_t body_start = close + 1;
+        const std::size_t end = pool.find("^end", body_start);
+        const std::size_t body_end = (end == std::string::npos) ? pool.size() : end;
+        const std::string_view seg(pool.data() + body_start, body_end - body_start);
+        pos = body_end;
+
+        // Page texts open with a binary command ('^' then a byte >= 0x80) right
+        // after "^block(id)". Readable "^font(...)" blocks are instrument/group
+        // names, never the title.
+        if (seg.size() < 2 || static_cast<unsigned char>(seg[0]) != '^' ||
+            static_cast<unsigned char>(seg[1]) < 0x80) {
+            continue;
+        }
+        const std::string text = clean_text_block(seg);
+        if (text.size() < 3) {
+            continue;
+        }
+        bool has_alpha = false;
+        for (const char ch : text) {
+            if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) {
+                has_alpha = true;
+                break;
+            }
+        }
+        if (!has_alpha) {
+            continue;
+        }
+        bool is_staff_name = false;
+        for (const std::string& nm : staff_names) {
+            if (!nm.empty() && nm == text) {
+                is_staff_name = true;
+                break;
+            }
+        }
+        if (is_staff_name) {
+            continue;
+        }
+        return text;
+    }
+    return std::string{};
+}
+
 /// Build a score when there are no 2003-era measure specs / frame holders, e.g. a
 /// Finale 2010+ (zlib) file whose Others/Details pools use the new framing we do
 /// not decode yet. Each entry-chain head (an entry that nothing links to) becomes
@@ -1069,6 +1204,16 @@ Result<std::string> convert_mus_to_musicxml(std::span<const std::byte> data, Dia
                                           verse_text, doc2011, diags);
     if (!score) {
         return Result<std::string>::fail(score.code(), score.message());
+    }
+
+    // Document metadata: fill the work title from the text pool when the score
+    // builder did not already set one.
+    if (score.value().work_title.empty()) {
+        std::string title = extract_work_title(verse_text, doc2011.staff_names);
+        if (!title.empty()) {
+            diags.info("extracted work title: " + title);
+            score.value().work_title = std::move(title);
+        }
     }
 
     // Layer 3: emit MusicXML.
