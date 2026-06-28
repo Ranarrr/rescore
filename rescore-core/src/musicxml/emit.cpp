@@ -517,6 +517,15 @@ Result<std::string> emit_score_partwise(const ir::Score& score, const EmitOption
         b.close("work");
     }
 
+    // identification: encoding provenance. (Creator/composer goes here too once
+    // its role is decoded from the page-text records; per the DTD it would
+    // precede <encoding>.)
+    b.open("identification");
+    b.open("encoding");
+    b.leaf("software", "Rescore");
+    b.close("encoding");
+    b.close("identification");
+
     // part-list.
     b.open("part-list");
     for (const auto& part : score.parts) {

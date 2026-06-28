@@ -44,6 +44,8 @@ TEST_CASE("emit trivial: document header is present", "[emit][musicxml]") {
     // The root element declares MusicXML version 4.0.
     REQUIRE_THAT(xml, ContainsSubstring("<score-partwise"));
     REQUIRE_THAT(xml, ContainsSubstring("version=\"4.0\""));
+    // Encoding provenance identifies the producing software.
+    REQUIRE_THAT(xml, ContainsSubstring("<software>Rescore</software>"));
 }
 
 TEST_CASE("emit trivial: pitch is middle C (C4)", "[emit][musicxml]") {
