@@ -128,6 +128,21 @@ struct Doc2011 {
 /// Doc2011 with `found == false` if there is no such chunk. Never throws.
 [[nodiscard]] Result<Doc2011> read_doc_2011(std::span<const std::byte> mus, Diagnostics& diags);
 
+/// A verse syllable bound to a note entry, recovered from the Finale 2010+ type-27
+/// Details pool (class 0x454). `verse` is 1-based; `syllable` is the 1-based ordinal
+/// into that verse's syllable list (split from the type-23 verse text).
+struct LyricAssign {
+    std::uint16_t entry_id{0};
+    int verse{1};
+    int syllable{0};
+};
+
+/// Read verse->entry lyric assignments from a Finale 2010+ type-27 Details pool
+/// (class 0x454). Deduplicated per entry id. Empty when the chunk is absent (e.g. a
+/// 2003-era file) or carries no lyric records. Never throws, never reads OOB.
+[[nodiscard]] Result<std::vector<LyricAssign>> read_lyric_assigns_2011(
+    std::span<const std::byte> mus, Diagnostics& diags);
+
 } // namespace rescore::container
 
 #endif // RESCORE_ENTRIES_HPP

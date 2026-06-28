@@ -386,37 +386,56 @@ struct LyricSyllable {
         const std::string block =
             (end == std::string::npos) ? text.substr(p) : text.substr(p, end - p);
 
-        // Strip inline '^command(args)' / '^command' tokens; keep the rest as run.
+        // Strip inline command tokens (both the readable '^command(args)' form and
+        // the binary '^<0x80+><control-bytes>' form used by late-era page texts),
+        // drop stray insert bytes, and fold line/tab breaks into word boundaries.
         std::string run;
         for (std::size_t i = 0; i < block.size();) {
-            if (block[i] != '^') {
-                run.push_back(block[i]);
-                ++i;
-                continue;
-            }
-            ++i; // skip '^'
-            while (i < block.size()) {
-                const char lc = static_cast<char>(block[i] | 0x20);
-                if (lc < 'a' || lc > 'z') {
+            const unsigned char c = static_cast<unsigned char>(block[i]);
+            if (c == '^') {
+                ++i; // skip '^'
+                if (i >= block.size()) {
                     break;
                 }
-                ++i;
-            }
-            if (i < block.size() && block[i] == '(') {
-                int depth = 0;
-                while (i < block.size()) {
-                    if (block[i] == '(') {
-                        ++depth;
-                    } else if (block[i] == ')') {
-                        --depth;
-                        if (depth == 0) {
-                            ++i;
+                const char lc = static_cast<char>(block[i] | 0x20);
+                if (lc >= 'a' && lc <= 'z') {
+                    while (i < block.size()) {
+                        const char l2 = static_cast<char>(block[i] | 0x20);
+                        if (l2 < 'a' || l2 > 'z') {
                             break;
                         }
+                        ++i;
                     }
+                    if (i < block.size() && block[i] == '(') {
+                        int depth = 0;
+                        while (i < block.size()) {
+                            if (block[i] == '(') {
+                                ++depth;
+                            } else if (block[i] == ')') {
+                                --depth;
+                                if (depth == 0) {
+                                    ++i;
+                                    break;
+                                }
+                            }
+                            ++i;
+                        }
+                    }
+                } else {
+                    // Binary command: skip the command byte and its control args.
                     ++i;
+                    while (i < block.size() && static_cast<unsigned char>(block[i]) < 0x20) {
+                        ++i;
+                    }
                 }
+                continue;
             }
+            if (c >= 0x20 && c < 0x7F) {
+                run.push_back(static_cast<char>(c));
+            } else if (c == '\n' || c == '\r' || c == '\t') {
+                run.push_back(' '); // a line/tab break is a word boundary
+            }
+            ++i;
         }
         const std::size_t a = run.find_first_not_of(' ');
         const std::size_t b = run.find_last_not_of(' ');
@@ -844,15 +863,41 @@ decode_measure_directions(const std::vector<container::OtherRecord>& others) {
     return std::string{};
 }
 
+/// Build the per-entry lyric features for a Finale 2010+ file from the decoded
+/// type-27 lyric assignments and the type-23 verse text. Mirrors the 2003 'ev'
+/// lyric path: each (verse, 1-based syllable ordinal) selects a syllable from the
+/// parsed verse and attaches it to its entry id.
+[[nodiscard]] EntryFeatures
+features_from_lyric_assigns(const std::vector<container::LyricAssign>& assigns,
+                            const std::string& verse_text) {
+    EntryFeatures feats;
+    const std::map<int, std::vector<LyricSyllable>> verses = parse_verses(verse_text);
+    for (const auto& a : assigns) {
+        const auto vit = verses.find(a.verse);
+        if (vit == verses.end() || a.syllable < 1 ||
+            static_cast<std::size_t>(a.syllable) > vit->second.size()) {
+            continue;
+        }
+        const LyricSyllable& syl = vit->second[static_cast<std::size_t>(a.syllable - 1)];
+        ir::Lyric ly;
+        ly.verse = a.verse;
+        ly.syllabic = syl.syllabic;
+        ly.text = syl.text;
+        feats.lyric[a.entry_id].push_back(ly);
+    }
+    return feats;
+}
+
 /// Build a score when there are no 2003-era measure specs / frame holders, e.g. a
-/// Finale 2010+ (zlib) file whose Others/Details pools use the new framing we do
-/// not decode yet. Each entry-chain head (an entry that nothing links to) becomes
-/// one part; the chain is split into 4/4 measures (the common case), padded with
-/// rests, under default C-major / treble attributes. The notes survive even
-/// before the late-era measure/staff specs are decoded.
+/// Finale 2010+ (zlib) file. Each entry-chain head (an entry that nothing links to)
+/// becomes one part; the chain is split into 4/4 measures (the common case), padded
+/// with rests. Clefs come from the decoded staff records and lyrics from the
+/// type-27 assignments; key/time are the document globals.
 [[nodiscard]] Result<ir::Score>
 build_score_from_chains(const std::vector<container::EntryRecord>& entries,
-                        const container::Doc2011& doc, Diagnostics& diags) {
+                        const container::Doc2011& doc, const std::string& verse_text,
+                        const std::vector<container::LyricAssign>& lyric_assigns,
+                        Diagnostics& diags) {
     using namespace ir;
     std::map<std::uint16_t, const container::EntryRecord*> by_id;
     std::set<std::uint16_t> linked;
@@ -945,7 +990,7 @@ build_score_from_chains(const std::vector<container::EntryRecord>& entries,
         }
     }
 
-    const EntryFeatures feats; // late-era slur/artic/lyric details not decoded yet
+    const EntryFeatures feats = features_from_lyric_assigns(lyric_assigns, verse_text);
 
     Score score;
     for (std::size_t i = 0; i < chains.size(); ++i) {
@@ -985,7 +1030,8 @@ build_score(const std::vector<container::OtherRecord>& others,
             const std::vector<container::EntryRecord>& entries,
             const std::vector<container::FrameHolder>& holders,
             const std::vector<container::DetailRecord>& details, const std::string& verse_text,
-            const container::Doc2011& doc2011, Diagnostics& diags) {
+            const container::Doc2011& doc2011,
+            const std::vector<container::LyricAssign>& lyric_assigns, Diagnostics& diags) {
     using namespace ir;
 
     const EntryFeatures feats = decode_entry_features(others, details, verse_text);
@@ -1002,7 +1048,7 @@ build_score(const std::vector<container::OtherRecord>& others,
         // 2010+ zlib file whose Others pool uses the new framing), fall back to
         // building a score from the entry-chain heads so the notes still convert.
         if (!entries.empty()) {
-            return build_score_from_chains(entries, doc2011, diags);
+            return build_score_from_chains(entries, doc2011, verse_text, lyric_assigns, diags);
         }
         return Result<Score>::fail(ErrorCode::NotImplemented,
                                    "no measure-spec records found; cannot build a score");
@@ -1208,10 +1254,14 @@ Result<std::string> convert_mus_to_musicxml(std::span<const std::byte> data, Dia
     const std::string verse_text = text ? text.value() : std::string{};
     Result<container::Doc2011> doc = container::read_doc_2011(data, diags);
     const container::Doc2011 doc2011 = doc ? doc.value() : container::Doc2011{};
+    Result<std::vector<container::LyricAssign>> lyrics =
+        container::read_lyric_assigns_2011(data, diags);
+    const std::vector<container::LyricAssign> lyric_assigns =
+        lyrics ? lyrics.value() : std::vector<container::LyricAssign>{};
 
     // Layer 2: build the IR (one part per staff, with notes).
     Result<ir::Score> score = build_score(others.value(), entry_list, holder_list, detail_list,
-                                          verse_text, doc2011, diags);
+                                          verse_text, doc2011, lyric_assigns, diags);
     if (!score) {
         return Result<std::string>::fail(score.code(), score.message());
     }

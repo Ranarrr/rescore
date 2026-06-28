@@ -358,4 +358,7 @@ TEST_CASE("convert: a Finale 2011 (zlib) file converts to MusicXML with notes",
     // Per-staff clefs come from the type-26 Staff records: the Tenor voice is a
     // vocal treble_8 (octave change -1), which the pitch heuristic cannot produce.
     REQUIRE_THAT(xml, ContainsSubstring("<clef-octave-change>-1</clef-octave-change>"));
+    // Verse lyrics are attached per note from the type-27 class 0x454 records.
+    REQUIRE_THAT(xml, ContainsSubstring("<text>Out</text>"));
+    REQUIRE_THAT(xml, ContainsSubstring("<text>deep</text>"));
 }

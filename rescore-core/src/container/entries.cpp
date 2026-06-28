@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -382,6 +383,95 @@ Result<Doc2011> read_doc_2011(std::span<const std::byte> mus, Diagnostics& diags
     diags.info(doc.found ? "decoded 2010+ document attributes (key / time / staff names)"
                          : "no 2010+ Others pool found");
     return Result<Doc2011>::ok(std::move(doc));
+}
+
+Result<std::vector<LyricAssign>> read_lyric_assigns_2011(std::span<const std::byte> mus,
+                                                         Diagnostics& diags) {
+    const auto u8m = [&mus](std::size_t at) -> unsigned {
+        return std::to_integer<unsigned>(mus[at]);
+    };
+
+    std::vector<LyricAssign> assigns;
+    std::size_t off = kChainStart;
+    while (off + kChunkHeaderSize <= mus.size()) {
+        const std::uint32_t type = u8m(off) | (u8m(off + 1) << 8);
+        const std::uint32_t size =
+            u8m(off + 2) | (u8m(off + 3) << 8) | (u8m(off + 4) << 16) | (u8m(off + 5) << 24);
+        if (size < kChunkHeaderSize || size > mus.size() || off > mus.size() - size) {
+            break;
+        }
+        if (type != kDetailsChunkType2011) {
+            off += size;
+            continue;
+        }
+
+        const std::span<const std::byte> stream = mus.subspan(
+            off + kChunkHeaderSize, static_cast<std::size_t>(size) - kChunkHeaderSize);
+        Result<std::vector<std::byte>> inflated = lzss::inflate_content(stream, diags);
+        if (!inflated) {
+            diags.warn("2010+ Details pool could not be decompressed; lyrics unavailable");
+            break;
+        }
+        const std::vector<std::byte>& p = inflated.value();
+        const auto u16 = [&p](std::size_t at) -> unsigned {
+            return std::to_integer<unsigned>(p[at]) | (std::to_integer<unsigned>(p[at + 1]) << 8);
+        };
+        const auto u32 = [&p](std::size_t at) -> std::uint32_t {
+            return std::to_integer<std::uint32_t>(p[at]) |
+                   (std::to_integer<std::uint32_t>(p[at + 1]) << 8) |
+                   (std::to_integer<std::uint32_t>(p[at + 2]) << 16) |
+                   (std::to_integer<std::uint32_t>(p[at + 3]) << 24);
+        };
+
+        // Record = [class:u16][cmper2:u16][cmper1:u16][inci:u16][len:u32][data:len].
+        // Between records, alignment / zero-dword trailers are skipped a dword at a
+        // time until the next 2 bytes are a class id we recognize (resync keeps the
+        // walk aligned through the variable-width trailers). Lyrics are class 0x454:
+        // cmper1 = entry id, data word0 = verse, data word1 = 1-based syllable.
+        static constexpr std::uint16_t kKnownClass[] = {
+            0x03EF, 0x03F1, 0x03F2, 0x03F3, 0x03F4, 0x03F6, 0x03F7, 0x03F8,
+            0x0413, 0x0414, 0x0421, 0x0426, 0x0427, 0x0428, 0x0454, 0x0455};
+        const auto is_known = [](unsigned cls) {
+            for (const std::uint16_t k : kKnownClass) {
+                if (k == cls) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        constexpr unsigned kLyricClass = 0x0454u;
+
+        std::set<std::uint16_t> seen;
+        std::size_t o = 0;
+        int guard = 0;
+        while (o + 12 <= p.size() && guard++ < 2000000) {
+            const unsigned cls = u16(o);
+            if (!is_known(cls)) {
+                o += 4; // skip a trailer / alignment dword and retry
+                continue;
+            }
+            const unsigned cmper1 = u16(o + 4);
+            const std::uint32_t len = u32(o + 8);
+            if (len > p.size() || o + 12 + len > p.size()) {
+                break; // implausible length: stop rather than read out of bounds
+            }
+            if (cls == kLyricClass && len >= 4) {
+                const auto entry_id = static_cast<std::uint16_t>(cmper1);
+                if (seen.insert(entry_id).second) { // dedupe the inci pair per entry
+                    LyricAssign a;
+                    a.entry_id = entry_id;
+                    a.verse = static_cast<int>(u16(o + 12));
+                    a.syllable = static_cast<int>(u16(o + 12 + 2));
+                    assigns.push_back(a);
+                }
+            }
+            o += 12 + len;
+        }
+        break; // only the first type-27 chunk
+    }
+
+    diags.info("decoded " + std::to_string(assigns.size()) + " 2010+ lyric assignments");
+    return Result<std::vector<LyricAssign>>::ok(std::move(assigns));
 }
 
 } // namespace rescore::container
