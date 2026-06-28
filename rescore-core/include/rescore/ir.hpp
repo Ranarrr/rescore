@@ -39,6 +39,7 @@ enum class ClefSign { G, F, C, Percussion };
 struct Clef {
     ClefSign sign{ClefSign::G};
     int line{2};
+    int octave_change{0}; // -1 = treble_8 (vocal tenor), +1 = treble^8, etc.
 };
 
 /// A key signature expressed in circle-of-fifths steps (sharps positive, flats

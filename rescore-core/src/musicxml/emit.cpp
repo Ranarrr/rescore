@@ -271,6 +271,9 @@ void emit_attributes(XmlBuilder& b, const ir::Measure& measure, const ir::Clef& 
     b.open("clef");
     b.leaf("sign", clef_sign_name(clef.sign));
     b.leaf("line", std::to_string(clef.line));
+    if (clef.octave_change != 0) {
+        b.leaf("clef-octave-change", std::to_string(clef.octave_change));
+    }
     b.close("clef");
 
     b.close("attributes");

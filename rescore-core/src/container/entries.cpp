@@ -315,6 +315,7 @@ Result<Doc2011> read_doc_2011(std::span<const std::byte> mus, Diagnostics& diags
         // One variable-length TLV stream: [tag:2][cmper:2][inci:2][dlen:2][data][6 zero pad].
         std::map<unsigned, std::pair<int, int>> timesig_library; // index -> (beats, divbeat)
         std::map<unsigned, std::string> names;                   // staff cmper -> name
+        std::map<unsigned, int> staff_clef_by_cmper;             // staff cmper -> clef index
         unsigned ts_index = 0;
         bool got_staff = false;
         std::size_t o = 0;
@@ -348,6 +349,15 @@ Result<Doc2011> read_doc_2011(std::span<const std::byte> mus, Diagnostics& diags
                 if (!name.empty()) {
                     names[cmper] = name;
                 }
+            } else if (tag == 0x00E7u && dlen >= 16) { // per-staff Staff record
+                // The default clef index is the byte at data+14 (+15 mirrors it as
+                // the transposed clef). cmper 0x7FFF is the document default.
+                const int ci = static_cast<int>(std::to_integer<unsigned>(p[data + 14]));
+                if (cmper == 0x7FFFu) {
+                    doc.default_clef = ci;
+                } else {
+                    staff_clef_by_cmper[cmper] = ci;
+                }
             }
             o += 8 + dlen + 6;
         }
@@ -362,6 +372,9 @@ Result<Doc2011> read_doc_2011(std::span<const std::byte> mus, Diagnostics& diags
         }
         for (const auto& kv : names) {
             doc.staff_names.push_back(kv.second);
+            const auto cit = staff_clef_by_cmper.find(kv.first);
+            doc.staff_clefs.push_back(cit != staff_clef_by_cmper.end() ? cit->second
+                                                                       : doc.default_clef);
         }
         break; // only the first type-26 chunk
     }

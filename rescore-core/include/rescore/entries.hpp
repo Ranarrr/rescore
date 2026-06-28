@@ -120,6 +120,8 @@ struct Doc2011 {
     int beats{4};               // time-signature numerator
     int divbeat{1024};          // EDU per beat (quarter = 1024)
     std::vector<std::string> staff_names; // active-staff names in cmper order
+    std::vector<int> staff_clefs;         // clef index per staff, aligned with staff_names
+    int default_clef{0};                  // document default clef index (0 = treble)
 };
 
 /// Read the document attributes from a Finale 2010+ type-26 Others pool. Returns a

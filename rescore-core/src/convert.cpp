@@ -58,6 +58,8 @@ ir::Clef clef_from_index(int clef_index) {
         return ir::Clef{ir::ClefSign::C, 3}; // alto (conventional)
     case 2:
         return ir::Clef{ir::ClefSign::C, 4}; // tenor (conventional)
+    case 5:
+        return ir::Clef{ir::ClefSign::G, 2, -1}; // treble_8 / vocal tenor (8 below)
     default:
         return ir::Clef{ir::ClefSign::G, 2}; // fallback: treble
     }
@@ -912,6 +914,7 @@ build_score_from_chains(const std::vector<container::EntryRecord>& entries,
     // Name the voices: a constant-pitch chain is the percussion click-track; the
     // melodic chains take the decoded staff names, highest pitch first.
     std::vector<std::string> part_names(chains.size());
+    std::map<std::size_t, ir::Clef> chain_clef; // chain index -> decoded staff clef
     {
         std::vector<std::pair<double, std::size_t>> melodic; // (average pitch, chain index)
         for (std::size_t i = 0; i < chains.size(); ++i) {
@@ -935,6 +938,10 @@ build_score_from_chains(const std::vector<container::EntryRecord>& entries,
                   [](const auto& a, const auto& b) { return a.first > b.first; });
         for (std::size_t k = 0; k < melodic.size() && k < doc.staff_names.size(); ++k) {
             part_names[melodic[k].second] = doc.staff_names[k];
+            if (k < doc.staff_clefs.size()) {
+                chain_clef.insert_or_assign(melodic[k].second,
+                                            clef_from_index(doc.staff_clefs[k]));
+            }
         }
     }
 
@@ -942,7 +949,10 @@ build_score_from_chains(const std::vector<container::EntryRecord>& entries,
 
     Score score;
     for (std::size_t i = 0; i < chains.size(); ++i) {
-        const Clef clef = clef_for_chain(chains[i]);
+        // Prefer the clef decoded from the staff record; fall back to the
+        // pitch-range heuristic for chains with no staff (e.g. a click track).
+        const auto cc = chain_clef.find(i);
+        const Clef clef = (cc != chain_clef.end()) ? cc->second : clef_for_chain(chains[i]);
         Staff staff;
         staff.initial_clef = clef;
         for (std::size_t m = 0; m < num_measures; ++m) {

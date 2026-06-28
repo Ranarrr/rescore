@@ -355,4 +355,7 @@ TEST_CASE("convert: a Finale 2011 (zlib) file converts to MusicXML with notes",
     REQUIRE_THAT(xml, ContainsSubstring("<step>"));
     // The work title is pulled from the first page-text block of the text pool.
     REQUIRE_THAT(xml, ContainsSubstring("<work-title>OUT OF THE DEEP</work-title>"));
+    // Per-staff clefs come from the type-26 Staff records: the Tenor voice is a
+    // vocal treble_8 (octave change -1), which the pitch heuristic cannot produce.
+    REQUIRE_THAT(xml, ContainsSubstring("<clef-octave-change>-1</clef-octave-change>"));
 }
