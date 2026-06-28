@@ -350,6 +350,11 @@ TEST_CASE("convert: describe_era identifies the Finale build and format generati
         REQUIRE_THAT(era, ContainsSubstring("2003-era"));
         REQUIRE_THAT(era, ContainsSubstring("2002"));
     }
+    if (const auto a = load_fixture("Tye_-_Alleluia.mus")) {
+        const std::string era = rescore::describe_era(*a);
+        REQUIRE_THAT(era, ContainsSubstring("late-era"));
+        REQUIRE_THAT(era, ContainsSubstring("2012"));
+    }
     // Random bytes are reported as unrecognized, never crash.
     const std::vector<std::byte> junk(64, std::byte{0x5A});
     REQUIRE_THAT(rescore::describe_era(junk), ContainsSubstring("unrecognized"));
