@@ -130,10 +130,12 @@ Result<std::vector<EntryRecord>> read_entry_pool(std::span<const std::byte> mus,
         std::size_t base = 0;
         while (base + kEntryRecordSize <= rec.size()) {
             EntryRecord out;
-            out.id = static_cast<std::uint16_t>(u16r(base));        // entry id at +0
+            out.id = static_cast<std::uint16_t>(u16r(base));           // entry id at +0
+            out.prev_id = static_cast<std::uint16_t>(u16r(base + 6));  // prev-link at +6
             out.next_id = static_cast<std::uint16_t>(u16r(base + 10)); // next-link at +10
             out.duration_edu = static_cast<std::int32_t>(u16r(base + kOffDurationEdu));
-            out.in_tuplet = (u8r(base + 22) & 0x08u) != 0u; // tuplet-membership flag
+            out.in_tuplet = (u8r(base + 22) & 0x08u) != 0u;             // tuplet-membership flag
+            out.feature_word = static_cast<std::uint16_t>(u16r(base + 30)); // per-entry flags
             const unsigned note_count = u8r(base + kOffNoteCount);
 
             unsigned got = 0;
@@ -353,6 +355,8 @@ Result<Doc2011> read_doc_2011(std::span<const std::byte> mus, Diagnostics& diags
         std::map<unsigned, int> staff_clef_by_cmper;             // staff cmper -> clef index
         std::map<unsigned, unsigned> spec_block;                 // page-text spec -> block id
         std::set<unsigned> title_area_specs;                     // top-centered flagged specs
+        std::map<unsigned, std::pair<std::uint16_t, std::uint16_t>>
+            artic_glyph_by_cmper; // articDef id -> (glyph code point, font id)
         unsigned ts_index = 0;
         bool got_staff = false;
         std::size_t o = 0;
@@ -406,6 +410,18 @@ Result<Doc2011> read_doc_2011(std::span<const std::byte> mus, Diagnostics& diags
                 } else {
                     staff_clef_by_cmper[cmper] = ci;
                 }
+            } else if (tag == 0x0079u && dlen >= 6) { // articulation-definition library
+                // cmper = articDef id; main glyph code point at data+2, font id at
+                // data+5 (high byte of the font word). Keep the first incidence.
+                if (artic_glyph_by_cmper.find(cmper) == artic_glyph_by_cmper.end()) {
+                    const auto glyph = static_cast<std::uint16_t>(
+                        std::to_integer<unsigned>(p[data + 2]));
+                    const auto font = static_cast<std::uint16_t>(
+                        std::to_integer<unsigned>(p[data + 5]));
+                    if (glyph != 0) {
+                        artic_glyph_by_cmper[cmper] = {glyph, font};
+                    }
+                }
             }
             o += 8 + dlen + 6;
         }
@@ -430,6 +446,9 @@ Result<Doc2011> read_doc_2011(std::span<const std::byte> mus, Diagnostics& diags
                 doc.title_area_blocks.push_back(static_cast<std::uint16_t>(it->second));
             }
         }
+        for (const auto& kv : artic_glyph_by_cmper) {
+            doc.artic_glyphs[static_cast<std::uint16_t>(kv.first)] = kv.second;
+        }
         break; // only the first type-26 chunk
     }
 
@@ -438,13 +457,13 @@ Result<Doc2011> read_doc_2011(std::span<const std::byte> mus, Diagnostics& diags
     return Result<Doc2011>::ok(std::move(doc));
 }
 
-Result<std::vector<LyricAssign>> read_lyric_assigns_2011(std::span<const std::byte> mus,
-                                                         Diagnostics& diags) {
+Result<std::vector<Detail2011>> read_details_2011(std::span<const std::byte> mus,
+                                                  Diagnostics& diags) {
     const auto u8m = [&mus](std::size_t at) -> unsigned {
         return std::to_integer<unsigned>(mus[at]);
     };
 
-    std::vector<LyricAssign> assigns;
+    std::vector<Detail2011> details;
     std::size_t off = find_chain_start(mus);
     while (off + kChunkHeaderSize <= mus.size()) {
         const std::uint32_t type = u8m(off) | (u8m(off + 1) << 8);
@@ -462,7 +481,7 @@ Result<std::vector<LyricAssign>> read_lyric_assigns_2011(std::span<const std::by
             off + kChunkHeaderSize, static_cast<std::size_t>(size) - kChunkHeaderSize);
         Result<std::vector<std::byte>> inflated = lzss::inflate_content(stream, diags);
         if (!inflated) {
-            diags.warn("2010+ Details pool could not be decompressed; lyrics unavailable");
+            diags.warn("2010+ Details pool could not be decompressed; attachments unavailable");
             break;
         }
         const std::vector<std::byte>& p = inflated.value();
@@ -478,11 +497,10 @@ Result<std::vector<LyricAssign>> read_lyric_assigns_2011(std::span<const std::by
 
         // Record = [class:u16][cmper2:u16][cmper1:u16][inci:u16][len:u32][data:len].
         // Between records, alignment / zero-dword trailers are skipped a dword at a
-        // time until the next 2 bytes are a class id we recognize (resync keeps the
-        // walk aligned through the variable-width trailers). Lyrics are class 0x454:
-        // cmper1 = entry id, data word0 = verse, data word1 = 1-based syllable.
+        // time until the next 2 bytes are a class id we recognize (the resync keeps
+        // the walk aligned through the variable-width trailers).
         static constexpr std::uint16_t kKnownClass[] = {
-            0x03EF, 0x03F1, 0x03F2, 0x03F3, 0x03F4, 0x03F6, 0x03F7, 0x03F8,
+            0x03EF, 0x03F1, 0x03F2, 0x03F3, 0x03F4, 0x03F6, 0x03F7, 0x03F8, 0x040C,
             0x0413, 0x0414, 0x0421, 0x0426, 0x0427, 0x0428, 0x0454, 0x0455};
         const auto is_known = [](unsigned cls) {
             for (const std::uint16_t k : kKnownClass) {
@@ -492,9 +510,7 @@ Result<std::vector<LyricAssign>> read_lyric_assigns_2011(std::span<const std::by
             }
             return false;
         };
-        constexpr unsigned kLyricClass = 0x0454u;
 
-        std::set<std::uint16_t> seen;
         std::size_t o = 0;
         int guard = 0;
         while (o + 12 <= p.size() && guard++ < 2000000) {
@@ -503,26 +519,51 @@ Result<std::vector<LyricAssign>> read_lyric_assigns_2011(std::span<const std::by
                 o += 4; // skip a trailer / alignment dword and retry
                 continue;
             }
-            const unsigned cmper1 = u16(o + 4);
             const std::uint32_t len = u32(o + 8);
             if (len > p.size() || o + 12 + len > p.size()) {
                 break; // implausible length: stop rather than read out of bounds
             }
-            if (cls == kLyricClass && len >= 4) {
-                const auto entry_id = static_cast<std::uint16_t>(cmper1);
-                if (seen.insert(entry_id).second) { // dedupe the inci pair per entry
-                    LyricAssign a;
-                    a.entry_id = entry_id;
-                    a.verse = static_cast<int>(u16(o + 12));
-                    a.syllable = static_cast<int>(u16(o + 12 + 2));
-                    assigns.push_back(a);
-                }
-            }
+            Detail2011 d;
+            d.cls = static_cast<std::uint16_t>(cls);
+            d.cmper2 = static_cast<std::uint16_t>(u16(o + 2));
+            d.cmper1 = static_cast<std::uint16_t>(u16(o + 4));
+            d.inci = static_cast<std::uint16_t>(u16(o + 6));
+            d.data.assign(p.begin() + static_cast<std::ptrdiff_t>(o + 12),
+                          p.begin() + static_cast<std::ptrdiff_t>(o + 12 + len));
+            details.push_back(std::move(d));
             o += 12 + len;
         }
         break; // only the first type-27 chunk
     }
 
+    diags.info("decoded " + std::to_string(details.size()) + " 2010+ detail records");
+    return Result<std::vector<Detail2011>>::ok(std::move(details));
+}
+
+Result<std::vector<LyricAssign>> read_lyric_assigns_2011(std::span<const std::byte> mus,
+                                                         Diagnostics& diags) {
+    Result<std::vector<Detail2011>> details = read_details_2011(mus, diags);
+    std::vector<LyricAssign> assigns;
+    if (details) {
+        std::set<std::uint16_t> seen; // each entry has two lyric records; keep one
+        for (const Detail2011& d : details.value()) {
+            if (d.cls != kClassLyric2011 || d.data.size() < 4) {
+                continue;
+            }
+            if (!seen.insert(d.cmper1).second) {
+                continue;
+            }
+            const auto u16d = [&d](std::size_t at) {
+                return std::to_integer<unsigned>(d.data[at]) |
+                       (std::to_integer<unsigned>(d.data[at + 1]) << 8);
+            };
+            LyricAssign a;
+            a.entry_id = d.cmper1;
+            a.verse = static_cast<int>(u16d(0));
+            a.syllable = static_cast<int>(u16d(2));
+            assigns.push_back(a);
+        }
+    }
     diags.info("decoded " + std::to_string(assigns.size()) + " 2010+ lyric assignments");
     return Result<std::vector<LyricAssign>>::ok(std::move(assigns));
 }

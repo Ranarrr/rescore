@@ -933,28 +933,121 @@ decode_measure_directions(const std::vector<container::OtherRecord>& others) {
 }
 
 /// Build the per-entry lyric features for a Finale 2010+ file from the decoded
-/// type-27 lyric assignments and the type-23 verse text. Mirrors the 2003 'ev'
+/// type-27 details (class 0x454) and the type-23 verse text. Mirrors the 2003 'ev'
 /// lyric path: each (verse, 1-based syllable ordinal) selects a syllable from the
-/// parsed verse and attaches it to its entry id.
+/// parsed verse and attaches it to its entry id. Each entry carries two lyric
+/// records (different incidences); the first is kept.
 [[nodiscard]] EntryFeatures
-features_from_lyric_assigns(const std::vector<container::LyricAssign>& assigns,
+features_from_lyric_assigns(const std::vector<container::Detail2011>& details,
                             const std::string& verse_text) {
     EntryFeatures feats;
     const std::map<int, std::vector<LyricSyllable>> verses = parse_verses(verse_text);
-    for (const auto& a : assigns) {
-        const auto vit = verses.find(a.verse);
-        if (vit == verses.end() || a.syllable < 1 ||
-            static_cast<std::size_t>(a.syllable) > vit->second.size()) {
+    std::set<std::uint16_t> seen;
+    for (const auto& d : details) {
+        if (d.cls != container::kClassLyric2011 || d.data.size() < 4) {
             continue;
         }
-        const LyricSyllable& syl = vit->second[static_cast<std::size_t>(a.syllable - 1)];
+        if (!seen.insert(d.cmper1).second) {
+            continue;
+        }
+        const auto u16d = [&d](std::size_t at) {
+            return std::to_integer<unsigned>(d.data[at]) |
+                   (std::to_integer<unsigned>(d.data[at + 1]) << 8);
+        };
+        const int verse = static_cast<int>(u16d(0));
+        const int index = static_cast<int>(u16d(2));
+        const auto vit = verses.find(verse);
+        if (vit == verses.end() || index < 1 ||
+            static_cast<std::size_t>(index) > vit->second.size()) {
+            continue;
+        }
+        const LyricSyllable& syl = vit->second[static_cast<std::size_t>(index - 1)];
         ir::Lyric ly;
-        ly.verse = a.verse;
+        ly.verse = verse;
         ly.syllabic = syl.syllabic;
         ly.text = syl.text;
-        feats.lyric[a.entry_id].push_back(ly);
+        feats.lyric[d.cmper1].push_back(ly);
     }
     return feats;
+}
+
+/// Reconstruct slurs from the type-27 class-0x40c marks. Each marks one entry that
+/// lies under a slur (data[0]==1); the 2011 format stores no explicit endpoints, so
+/// a slur is a maximal run of consecutive entries (via the next-link chain) that all
+/// carry the mark - its first/last entries become the slur start/stop.
+void add_slurs_2011(const std::vector<container::Detail2011>& details,
+                    const std::vector<container::EntryRecord>& entries, EntryFeatures& feats) {
+    std::set<std::uint16_t> slurred;
+    for (const auto& d : details) {
+        if (d.cls == container::kClassSlurMark2011 && !d.data.empty() &&
+            std::to_integer<unsigned>(d.data[0]) == 1u) {
+            slurred.insert(d.cmper1);
+        }
+    }
+    if (slurred.empty()) {
+        return;
+    }
+    std::map<std::uint16_t, const container::EntryRecord*> by_id;
+    for (const auto& e : entries) {
+        by_id.emplace(e.id, &e);
+    }
+    int slur_number = 0;
+    for (const auto& e : entries) {
+        if (slurred.find(e.id) == slurred.end()) {
+            continue; // not under a slur
+        }
+        if (e.prev_id != 0 && slurred.count(e.prev_id) != 0) {
+            continue; // interior / last note of a run, not its start
+        }
+        std::uint16_t last = e.id;
+        std::uint16_t cur = e.id;
+        int guard = 0;
+        while (guard++ < 65536) {
+            const auto it = by_id.find(cur);
+            if (it == by_id.end()) {
+                break;
+            }
+            const std::uint16_t nxt = it->second->next_id;
+            if (nxt == 0 || slurred.count(nxt) == 0) {
+                break;
+            }
+            last = nxt;
+            cur = nxt;
+        }
+        if (last != e.id) { // a run of length >= 2 is a real slur
+            const int number = (slur_number++ % 6) + 1;
+            feats.slur[e.id].start = number;
+            feats.slur[last].stop = number;
+        }
+    }
+}
+
+/// Attach articulations from the type-27 class-0x3ef per-entry records. Each names
+/// an articDef id (data word0) resolved through the type-26 glyph library decoded
+/// into Doc2011::artic_glyphs, then mapped to a named articulation via the shared
+/// artic_from_glyph table. Unresolved ids are skipped (never guessed).
+void add_artics_2011(const std::vector<container::Detail2011>& details,
+                     const container::Doc2011& doc, EntryFeatures& feats) {
+    std::map<std::uint16_t, ir::Articulation> def_artic;
+    for (const auto& [id, g] : doc.artic_glyphs) {
+        if (const auto a = artic_from_glyph(g.first, g.second)) {
+            def_artic.emplace(id, *a);
+        }
+    }
+    if (def_artic.empty()) {
+        return;
+    }
+    for (const auto& d : details) {
+        if (d.cls != container::kClassArticAssign2011 || d.cmper2 != 0 || d.data.size() < 2) {
+            continue;
+        }
+        const auto def_id = static_cast<std::uint16_t>(
+            std::to_integer<unsigned>(d.data[0]) | (std::to_integer<unsigned>(d.data[1]) << 8));
+        const auto it = def_artic.find(def_id);
+        if (it != def_artic.end()) {
+            feats.artic[d.cmper1].push_back(it->second);
+        }
+    }
 }
 
 /// Build a score when there are no 2003-era measure specs / frame holders, e.g. a
@@ -965,8 +1058,7 @@ features_from_lyric_assigns(const std::vector<container::LyricAssign>& assigns,
 [[nodiscard]] Result<ir::Score>
 build_score_from_chains(const std::vector<container::EntryRecord>& entries,
                         const container::Doc2011& doc, const std::string& verse_text,
-                        const std::vector<container::LyricAssign>& lyric_assigns,
-                        Diagnostics& diags) {
+                        const std::vector<container::Detail2011>& details, Diagnostics& diags) {
     using namespace ir;
     std::map<std::uint16_t, const container::EntryRecord*> by_id;
     std::set<std::uint16_t> linked;
@@ -1059,7 +1151,9 @@ build_score_from_chains(const std::vector<container::EntryRecord>& entries,
         }
     }
 
-    const EntryFeatures feats = features_from_lyric_assigns(lyric_assigns, verse_text);
+    EntryFeatures feats = features_from_lyric_assigns(details, verse_text);
+    add_slurs_2011(details, entries, feats);
+    add_artics_2011(details, doc, feats);
 
     Score score;
     for (std::size_t i = 0; i < chains.size(); ++i) {
@@ -1100,7 +1194,7 @@ build_score(const std::vector<container::OtherRecord>& others,
             const std::vector<container::FrameHolder>& holders,
             const std::vector<container::DetailRecord>& details, const std::string& verse_text,
             const container::Doc2011& doc2011,
-            const std::vector<container::LyricAssign>& lyric_assigns, Diagnostics& diags) {
+            const std::vector<container::Detail2011>& details_2011, Diagnostics& diags) {
     using namespace ir;
 
     const EntryFeatures feats = decode_entry_features(others, details, verse_text);
@@ -1117,7 +1211,7 @@ build_score(const std::vector<container::OtherRecord>& others,
         // 2010+ zlib file whose Others pool uses the new framing), fall back to
         // building a score from the entry-chain heads so the notes still convert.
         if (!entries.empty()) {
-            return build_score_from_chains(entries, doc2011, verse_text, lyric_assigns, diags);
+            return build_score_from_chains(entries, doc2011, verse_text, details_2011, diags);
         }
         return Result<Score>::fail(ErrorCode::NotImplemented,
                                    "no measure-spec records found; cannot build a score");
@@ -1359,14 +1453,14 @@ Result<std::string> convert_mus_to_musicxml(std::span<const std::byte> data, Dia
     const std::string verse_text = text ? text.value() : std::string{};
     Result<container::Doc2011> doc = container::read_doc_2011(data, diags);
     const container::Doc2011 doc2011 = doc ? doc.value() : container::Doc2011{};
-    Result<std::vector<container::LyricAssign>> lyrics =
-        container::read_lyric_assigns_2011(data, diags);
-    const std::vector<container::LyricAssign> lyric_assigns =
-        lyrics ? lyrics.value() : std::vector<container::LyricAssign>{};
+    Result<std::vector<container::Detail2011>> details_2011_res =
+        container::read_details_2011(data, diags);
+    const std::vector<container::Detail2011> details_2011 =
+        details_2011_res ? details_2011_res.value() : std::vector<container::Detail2011>{};
 
     // Layer 2: build the IR (one part per staff, with notes).
     Result<ir::Score> score = build_score(others.value(), entry_list, holder_list, detail_list,
-                                          verse_text, doc2011, lyric_assigns, diags);
+                                          verse_text, doc2011, details_2011, diags);
     if (!score) {
         return Result<std::string>::fail(score.code(), score.message());
     }

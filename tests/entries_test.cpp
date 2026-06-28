@@ -406,6 +406,26 @@ TEST_CASE("convert: composer is decoded from the title-area page texts",
     }
 }
 
+TEST_CASE("convert: 2011 slurs and articulations decode (vs negative controls)",
+          "[convert][notation]") {
+    // Tomkins (a cappella): 8 named staccatos (type-26 glyph library), and NO slurs.
+    if (const auto t = load_fixture("Tomkins_-_Out_of_the_deep.mus")) {
+        rescore::Diagnostics diags;
+        const auto res = rescore::convert_mus_to_musicxml(*t, diags);
+        REQUIRE(res.has_value());
+        REQUIRE_THAT(res.value(), ContainsSubstring("<staccato/>"));
+        REQUIRE(res.value().find("<slur ") == std::string::npos); // no slurs in a cappella
+    }
+    // Gounod (instrumental): real slurs AND articulations (the present-side control).
+    if (const auto g = load_fixture("Gounod-Meditation-Piano.mus")) {
+        rescore::Diagnostics diags;
+        const auto res = rescore::convert_mus_to_musicxml(*g, diags);
+        REQUIRE(res.has_value());
+        REQUIRE_THAT(res.value(), ContainsSubstring("<slur type=\"start\""));
+        REQUIRE_THAT(res.value(), ContainsSubstring("<staccato/>"));
+    }
+}
+
 TEST_CASE("convert: a Finale 2011 (zlib) file converts to MusicXML with notes",
           "[convert][zlib]") {
     const auto buf = load_fixture("Tomkins_-_Out_of_the_deep.mus");

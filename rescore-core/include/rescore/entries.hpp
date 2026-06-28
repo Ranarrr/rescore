@@ -15,8 +15,10 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "rescore/result.hpp"
@@ -40,9 +42,11 @@ struct EntryNote {
 /// (0 ends the chain).
 struct EntryRecord {
     std::uint16_t id{0};
+    std::uint16_t prev_id{0};
     std::uint16_t next_id{0};
     std::int32_t duration_edu{1024}; // displayed note value (e.g. eighth = 512)
     bool in_tuplet{false};           // this entry is part of a tuplet group
+    std::uint16_t feature_word{0};   // entry flag word at +30 (per-entry attachments)
     std::vector<EntryNote> notes;
 };
 
@@ -130,6 +134,9 @@ struct Doc2011 {
     // Text-block ids of the title-area page texts (top-centered, flagged): the
     // title and composer page texts, in ascending block-id order.
     std::vector<std::uint16_t> title_area_blocks;
+    // Articulation-definition library (type-26 tag 0x79): articDef id -> (glyph
+    // code point, font id). Resolves a per-entry articulation to a named symbol.
+    std::map<std::uint16_t, std::pair<std::uint16_t, std::uint16_t>> artic_glyphs;
 };
 
 /// Read the document attributes from a Finale 2010+ type-26 Others pool. Returns a
@@ -150,6 +157,29 @@ struct LyricAssign {
 /// 2003-era file) or carries no lyric records. Never throws, never reads OOB.
 [[nodiscard]] Result<std::vector<LyricAssign>> read_lyric_assigns_2011(
     std::span<const std::byte> mus, Diagnostics& diags);
+
+/// One record from the Finale 2010+ type-27 Details pool. The framing is
+/// [class:u16][cmper2:u16][cmper1:u16][inci:u16][len:u32][data:len]; `cmper1` is
+/// usually the anchor (an entry id for per-entry classes). Key classes: 0x3ef
+/// articulation-assign, 0x40c slur mark, 0x428 expression assign, 0x454 lyric.
+struct Detail2011 {
+    std::uint16_t cls{0};
+    std::uint16_t cmper2{0};
+    std::uint16_t cmper1{0};
+    std::uint16_t inci{0};
+    std::vector<std::byte> data;
+};
+
+inline constexpr std::uint16_t kClassArticAssign2011 = 0x03EF;
+inline constexpr std::uint16_t kClassSlurMark2011 = 0x040C;
+inline constexpr std::uint16_t kClassExprAssign2011 = 0x0428;
+inline constexpr std::uint16_t kClassLyric2011 = 0x0454;
+
+/// Read every record from the Finale 2010+ type-27 Details pool (one Detail2011
+/// per record, undeduplicated). Empty when the chunk is absent. Never throws,
+/// never reads out of bounds.
+[[nodiscard]] Result<std::vector<Detail2011>> read_details_2011(std::span<const std::byte> mus,
+                                                                Diagnostics& diags);
 
 } // namespace rescore::container
 
