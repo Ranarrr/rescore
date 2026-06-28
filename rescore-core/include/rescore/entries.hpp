@@ -87,6 +87,11 @@ inline constexpr std::uint16_t kTextChunkType2011 = 23;
 inline constexpr std::uint16_t kOthersChunkType2011 = 26;  // measure/staff specs (TLV)
 inline constexpr std::uint16_t kDetailsChunkType2011 = 27; // per-cell / per-entry detail (TLV)
 
+/// Detect where the content chunk chain begins. Usually 0x200, but a large
+/// File-Info header pushes it later; this validates the chain to find the real
+/// start (falling back to 0x200). Never throws.
+[[nodiscard]] std::size_t find_chain_start(std::span<const std::byte> mus);
+
 /// Walk the chunk chain and decode the note entries from the entry chunk(s).
 /// Returns the entries (possibly empty, with a diagnostic). Never throws.
 [[nodiscard]] Result<std::vector<EntryRecord>> read_entry_pool(std::span<const std::byte> mus,

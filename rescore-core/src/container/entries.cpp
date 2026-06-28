@@ -41,6 +41,40 @@ int decode_alter(unsigned tcd) {
 
 } // namespace
 
+std::size_t find_chain_start(std::span<const std::byte> mus) {
+    const auto u8 = [&mus](std::size_t i) { return std::to_integer<unsigned>(mus[i]); };
+    // A start is valid if a chunk walk from it parses several known chunk types and
+    // consumes most of the file (real .mus files have 4: entries/text/others/details).
+    const auto validates = [&](std::size_t start) -> bool {
+        std::size_t off = start;
+        int chunks = 0;
+        while (off + kChunkHeaderSize <= mus.size()) {
+            const unsigned type = u8(off) | (u8(off + 1) << 8);
+            const std::uint32_t size = u8(off + 2) | (u8(off + 3) << 8) | (u8(off + 4) << 16) |
+                                       (u8(off + 5) << 24);
+            const bool known = (type >= 15u && type <= 18u) || (type >= 22u && type <= 27u);
+            if (!known || size < kChunkHeaderSize || size > mus.size() ||
+                off > mus.size() - size) {
+                break;
+            }
+            ++chunks;
+            off += size;
+        }
+        return chunks >= 2 && off >= start + (mus.size() - start) / 2;
+    };
+    if (mus.size() > kChainStart && validates(kChainStart)) {
+        return kChainStart;
+    }
+    // A larger File-Info header pushes the chain past 0x200: find the first zlib
+    // (late-era) chunk body and validate the chain that begins 10 bytes before it.
+    for (std::size_t i = kChunkHeaderSize; i + 1 < mus.size(); ++i) {
+        if (u8(i) == 0x78u && u8(i + 1) == 0x9Cu && validates(i - kChunkHeaderSize)) {
+            return i - kChunkHeaderSize;
+        }
+    }
+    return kChainStart; // fall back to the legacy fixed offset
+}
+
 Result<std::vector<EntryRecord>> read_entry_pool(std::span<const std::byte> mus,
                                                  Diagnostics& diags) {
     const auto u8m = [&mus](std::size_t at) -> unsigned {
@@ -48,7 +82,7 @@ Result<std::vector<EntryRecord>> read_entry_pool(std::span<const std::byte> mus,
     };
 
     std::vector<EntryRecord> entries;
-    std::size_t off = kChainStart;
+    std::size_t off = find_chain_start(mus);
     while (off + kChunkHeaderSize <= mus.size()) {
         const std::uint32_t type = u8m(off) | (u8m(off + 1) << 8);
         const std::uint32_t size =
@@ -134,7 +168,7 @@ Result<std::vector<FrameHolder>> read_frame_holders(std::span<const std::byte> m
     };
 
     std::vector<FrameHolder> holders;
-    std::size_t off = kChainStart;
+    std::size_t off = find_chain_start(mus);
     while (off + kChunkHeaderSize <= mus.size()) {
         const std::uint32_t type = u8m(off) | (u8m(off + 1) << 8);
         const std::uint32_t size =
@@ -195,7 +229,7 @@ Result<std::vector<DetailRecord>> read_details_pool(std::span<const std::byte> m
     };
 
     std::vector<DetailRecord> records;
-    std::size_t off = kChainStart;
+    std::size_t off = find_chain_start(mus);
     while (off + kChunkHeaderSize <= mus.size()) {
         const std::uint32_t type = u8m(off) | (u8m(off + 1) << 8);
         const std::uint32_t size =
@@ -249,7 +283,7 @@ Result<std::string> read_text_pool(std::span<const std::byte> mus, Diagnostics& 
     };
 
     std::string text;
-    std::size_t off = kChainStart;
+    std::size_t off = find_chain_start(mus);
     while (off + kChunkHeaderSize <= mus.size()) {
         const std::uint32_t type = u8m(off) | (u8m(off + 1) << 8);
         const std::uint32_t size =
@@ -288,7 +322,7 @@ Result<Doc2011> read_doc_2011(std::span<const std::byte> mus, Diagnostics& diags
     };
 
     Doc2011 doc;
-    std::size_t off = kChainStart;
+    std::size_t off = find_chain_start(mus);
     while (off + kChunkHeaderSize <= mus.size()) {
         const std::uint32_t type = u8m(off) | (u8m(off + 1) << 8);
         const std::uint32_t size =
@@ -411,7 +445,7 @@ Result<std::vector<LyricAssign>> read_lyric_assigns_2011(std::span<const std::by
     };
 
     std::vector<LyricAssign> assigns;
-    std::size_t off = kChainStart;
+    std::size_t off = find_chain_start(mus);
     while (off + kChunkHeaderSize <= mus.size()) {
         const std::uint32_t type = u8m(off) | (u8m(off + 1) << 8);
         const std::uint32_t size =

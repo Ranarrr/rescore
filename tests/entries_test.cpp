@@ -360,6 +360,33 @@ TEST_CASE("convert: describe_era identifies the Finale build and format generati
     REQUIRE_THAT(rescore::describe_era(junk), ContainsSubstring("unrecognized"));
 }
 
+TEST_CASE("container: find_chain_start locates the content chain past a big header",
+          "[container][chain]") {
+    // The common case: the chain begins at 0x200.
+    if (const auto t = load_fixture("Tomkins_-_Out_of_the_deep.mus")) {
+        REQUIRE(rescore::container::find_chain_start(*t) == 0x200);
+    }
+    // A large File-Info header pushes the chain later (Gounod begins at 0x30c).
+    if (const auto g = load_fixture("Gounod-Meditation-Piano.mus")) {
+        REQUIRE(rescore::container::find_chain_start(*g) == 0x30c);
+    }
+    // Synthetic: junk where 0x200 would be, a valid two-chunk chain at 0x300.
+    std::vector<std::byte> buf(0x400, std::byte{0});
+    const auto put = [&](std::size_t at, std::uint16_t type, std::uint32_t size) {
+        buf[at] = static_cast<std::byte>(type & 0xFF);
+        buf[at + 1] = static_cast<std::byte>(type >> 8);
+        buf[at + 2] = static_cast<std::byte>(size & 0xFF);
+        buf[at + 3] = static_cast<std::byte>((size >> 8) & 0xFF);
+        buf[at + 4] = static_cast<std::byte>((size >> 16) & 0xFF);
+        buf[at + 5] = static_cast<std::byte>((size >> 24) & 0xFF);
+        buf[at + 10] = std::byte{0x78}; // zlib body marker the scanner looks for
+        buf[at + 11] = std::byte{0x9C};
+    };
+    put(0x300, 26, 0x80); // type 26, size 128 -> next chunk at 0x380
+    put(0x380, 23, 0x80); // type 23, size 128 -> next at 0x400 (end of buffer)
+    REQUIRE(rescore::container::find_chain_start(buf) == 0x300);
+}
+
 TEST_CASE("convert: composer is decoded from the title-area page texts",
           "[convert][composer]") {
     // Cross-validated on two independent Finale 2011/2012 files: the composer is

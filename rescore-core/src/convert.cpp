@@ -1298,7 +1298,7 @@ std::string describe_era(std::span<const std::byte> data) {
     bool early = false;
     {
         const auto u8 = [&data](std::size_t i) { return std::to_integer<unsigned>(data[i]); };
-        std::size_t off = 0x200;
+        std::size_t off = container::find_chain_start(data);
         int guard = 0;
         while (off + 10 <= data.size() && guard++ < 100000) {
             const unsigned type = u8(off) | (u8(off + 1) << 8);
