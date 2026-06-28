@@ -338,6 +338,23 @@ TEST_CASE("convert: a per-staff dynamic routes to its own part", "[convert][dyna
     CHECK(p > p2); // piano lands in the second part
 }
 
+TEST_CASE("convert: describe_era identifies the Finale build and format generation",
+          "[convert][era]") {
+    if (const auto t = load_fixture("Tomkins_-_Out_of_the_deep.mus")) {
+        const std::string era = rescore::describe_era(*t);
+        REQUIRE_THAT(era, ContainsSubstring("late-era"));
+        REQUIRE_THAT(era, ContainsSubstring("2011"));
+    }
+    if (const auto s = load_fixture("Scapulis.MUS")) {
+        const std::string era = rescore::describe_era(*s);
+        REQUIRE_THAT(era, ContainsSubstring("2003-era"));
+        REQUIRE_THAT(era, ContainsSubstring("2002"));
+    }
+    // Random bytes are reported as unrecognized, never crash.
+    const std::vector<std::byte> junk(64, std::byte{0x5A});
+    REQUIRE_THAT(rescore::describe_era(junk), ContainsSubstring("unrecognized"));
+}
+
 TEST_CASE("convert: a Finale 2011 (zlib) file converts to MusicXML with notes",
           "[convert][zlib]") {
     const auto buf = load_fixture("Tomkins_-_Out_of_the_deep.mus");

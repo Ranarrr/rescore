@@ -83,6 +83,11 @@ template <std::size_t N>
             break;
         }
     }
+    // Drop a trailing copyright notice so the label is just the build, e.g.
+    // "Finale(R) 2002 Copyright (c) 1987-2002 ..." -> "Finale(R) 2002".
+    if (const std::size_t cpos = out.find("Copyright"); cpos != std::string::npos) {
+        out.erase(cpos);
+    }
     // Trim trailing whitespace.
     while (!out.empty() && std::isspace(static_cast<unsigned char>(out.back()))) {
         out.pop_back();
@@ -117,8 +122,16 @@ EnigmaVersion detect_version(std::span<const std::byte> data) {
     if (const std::size_t e = find(data, kEnigmaMagic, kScanLimit);
         e != static_cast<std::size_t>(-1)) {
         result.era = EnigmaEra::V3Plus;
-        // The build label typically follows the magic; recover from just past it.
-        result.version_string = recover_version_string(data, e + kEnigmaMagic.size());
+        // The human build label ("Finale(R) 2002 ...") follows the magic after a
+        // run of zero padding, so recover it from the "Finale" prefix when present
+        // rather than from the bytes immediately after the magic (which are zeros).
+        if (const std::size_t fin = find(data, kFinalePrefix, kScanLimit);
+            fin != static_cast<std::size_t>(-1)) {
+            result.version_string = recover_version_string(data, fin);
+        }
+        if (result.version_string.empty()) {
+            result.version_string = recover_version_string(data, e + kEnigmaMagic.size());
+        }
         if (result.version_string.empty()) {
             result.version_string = "ENIGMA BINARY FILE";
         }

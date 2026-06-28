@@ -89,6 +89,21 @@ TEST_CASE("detect_version: v3+ ENIGMA BINARY FILE magic", "[version]") {
     }
 }
 
+TEST_CASE("detect_version: recovers the Finale build label past zero padding", "[version]") {
+    // Real V3+ files pad the magic with zeros, then carry "Finale(R) YYYY ..." at
+    // offset 0x20. The label must be recovered (not the magic) and the trailing
+    // copyright notice trimmed off.
+    std::vector<std::byte> buf = kEnigmaMagic;
+    for (int i = 0; i < 14; ++i) {
+        buf.push_back(std::byte{0x00});
+    }
+    const auto label = bytes("Finale(R) 2002 Copyright (c) 1987-2002 Coda Music Technology");
+    buf.insert(buf.end(), label.begin(), label.end());
+    const auto v = detect_version(buf);
+    REQUIRE(v.era == EnigmaEra::V3Plus);
+    REQUIRE(v.version_string == "Finale(R) 2002");
+}
+
 TEST_CASE("detect_version: empty buffer is Unknown, never crashes", "[version]") {
     REQUIRE(detect_version(std::span<const std::byte>{}).era == EnigmaEra::Unknown);
 }

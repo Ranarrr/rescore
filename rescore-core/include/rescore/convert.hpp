@@ -38,6 +38,14 @@ namespace rescore {
 /// drive the emitter without any binary input.
 [[nodiscard]] ir::Score build_trivial_score();
 
+/// Human-readable description of a .mus file's Finale build and format generation,
+/// for display when a file is loaded. Recognizes the container, then classifies
+/// the generation from the chunk types present (LZSS 2003-era vs zlib late-era).
+/// Examples: "Finale(R) 2002 - early format (Finale 3.0-2009 / 2003-era, LZSS)";
+/// "Finale(R) 2011 - late-era format (Finale 2010-2012, zlib/DEFLATE)". Never
+/// throws; returns an "unrecognized" note for non-.mus input.
+[[nodiscard]] std::string describe_era(std::span<const std::byte> data);
+
 // --- Enigma measure-spec -> IR attribute mappings ---------------------------
 // These translate the raw fields of a Measure Spec / Staff Spec "Other" record
 // into IR values. They are pure, total functions (no failure path) so they can

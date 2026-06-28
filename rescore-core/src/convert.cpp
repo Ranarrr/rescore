@@ -1217,6 +1217,42 @@ ir::Score build_trivial_score() {
     return score;
 }
 
+std::string describe_era(std::span<const std::byte> data) {
+    const EnigmaVersion v = detect_version(data);
+    if (v.era == EnigmaEra::Unknown) {
+        return "unrecognized (not an Enigma Binary File / .mus container)";
+    }
+    // Classify the format generation from the chunk types present: the 2003-era
+    // uses LZSS chunks 15-18; the late era (Finale 2010-2012) uses zlib chunks
+    // 22-27. The two ranges never overlap, so a single pass tells them apart.
+    bool late = false;
+    bool early = false;
+    {
+        const auto u8 = [&data](std::size_t i) { return std::to_integer<unsigned>(data[i]); };
+        std::size_t off = 0x200;
+        int guard = 0;
+        while (off + 10 <= data.size() && guard++ < 100000) {
+            const unsigned type = u8(off) | (u8(off + 1) << 8);
+            const std::uint32_t size =
+                u8(off + 2) | (u8(off + 3) << 8) | (u8(off + 4) << 16) | (u8(off + 5) << 24);
+            if (size < 10 || size > data.size() || off > data.size() - size) {
+                break;
+            }
+            if (type >= 22u && type <= 27u) {
+                late = true;
+            } else if (type >= 15u && type <= 18u) {
+                early = true;
+            }
+            off += size;
+        }
+    }
+    const std::string label = v.version_string.empty() ? std::string("Finale") : v.version_string;
+    const char* gen = late    ? " - late-era format (Finale 2010-2012, zlib/DEFLATE)"
+                      : early  ? " - early format (Finale 3.0-2009 / 2003-era, LZSS)"
+                               : " - Enigma Binary File (format generation undetermined)";
+    return label + gen;
+}
+
 Result<std::string> convert_mus_to_musicxml(std::span<const std::byte> data, Diagnostics& diags) {
     // Layer 1: validate the container magic / era.
     const EnigmaVersion version = detect_version(data);

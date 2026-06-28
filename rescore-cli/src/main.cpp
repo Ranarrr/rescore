@@ -438,6 +438,7 @@ struct ParseResult {
     const bool wants_mxl = output.has_value() && has_extension_ci(*output, ".mxl");
 
     const std::span<const std::byte> view{bytes.data(), bytes.size()};
+    std::cerr << "rescore: detected " << rescore::describe_era(view) << "\n";
     rescore::Diagnostics diags;
     const rescore::Result<std::string> conv =
         rescore::convert_mus_to_musicxml(view, diags);

@@ -26,6 +26,7 @@ namespace {
 
 struct AppState {
     std::string status;
+    std::string era; // detected Finale build + format generation of the loaded file
     bool ok = false;
 };
 AppState g_app;
@@ -49,6 +50,7 @@ void convert_file(const std::string& mus_path) {
     if (!in) {
         g_app.ok = false;
         g_app.status = "Could not open that file.";
+        g_app.era.clear();
         return;
     }
     const std::vector<char> raw((std::istreambuf_iterator<char>(in)),
@@ -58,6 +60,10 @@ void convert_file(const std::string& mus_path) {
     for (const char c : raw) {
         bytes.push_back(static_cast<std::byte>(static_cast<unsigned char>(c)));
     }
+
+    // Identify the file's Finale build / format generation for display, even if
+    // the conversion below fails.
+    g_app.era = rescore::describe_era(bytes);
 
     rescore::Diagnostics diags;
     const auto res = rescore::convert_mus_to_musicxml(bytes, diags);
@@ -210,6 +216,14 @@ void render_ui() {
                 ImGui::SetClipboardText(g_app.status.c_str());
             }
         }
+    }
+
+    // Show the detected Finale build / format generation of the loaded file.
+    if (!g_app.era.empty()) {
+        ImGui::Dummy(ImVec2(0.0f, 6.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.47f, 0.52f, 1.0f));
+        text_wrapped(("File format: " + g_app.era).c_str());
+        ImGui::PopStyleColor();
     }
 
     // --- footer ------------------------------------------------------------
