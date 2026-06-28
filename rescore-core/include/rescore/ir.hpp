@@ -123,6 +123,8 @@ struct Entry {
     int slur_stop{0};            // slur number stopping on this entry (0 = none)
     std::vector<Articulation> articulations; // marks attached to this entry
     std::vector<Lyric> lyrics;               // syllables under this entry
+    std::vector<std::string> dynamics; // dynamic marks at this entry, hoisted to the
+                                       // measure as <direction>s at the entry's beat
 };
 
 /// A single rhythmic stream (one layer/voice) within a measure.

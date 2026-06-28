@@ -133,6 +133,7 @@ struct EntryFeatures {
     std::map<std::uint16_t, SlurMark> slur;
     std::map<std::uint16_t, std::vector<ir::Articulation>> artic;
     std::map<std::uint16_t, std::vector<ir::Lyric>> lyric;
+    std::map<std::uint16_t, std::vector<std::string>> dynamic; // dynamic marks per entry
 };
 
 /// Copy any decoded features for `entry_id` onto the resolved IR entry.
@@ -146,6 +147,9 @@ void attach_entry_features(ir::Entry& dst, std::uint16_t entry_id, const EntryFe
     }
     if (const auto it = feats.lyric.find(entry_id); it != feats.lyric.end()) {
         dst.lyrics = it->second;
+    }
+    if (const auto it = feats.dynamic.find(entry_id); it != feats.dynamic.end()) {
+        dst.dynamics = it->second;
     }
 }
 
@@ -242,6 +246,15 @@ void place_voice(ir::Staff& staff, const std::vector<container::EntryRecord>& en
                 diags.warn("more note time than measures; extra notes dropped");
                 break;
             }
+        }
+        // Hoist any dynamic marks on this entry to a measure-level <direction> at
+        // the entry's beat (acc = the entry's EDU offset within measure mi).
+        for (const std::string& dyn : entry.dynamics) {
+            ir::Direction dir;
+            dir.kind = ir::Direction::Kind::Dynamic;
+            dir.dynamic = dyn;
+            dir.position = acc;
+            staff.measures[mi].directions.push_back(dir);
         }
         acc += entry.duration;
         voice[mi].entries.push_back(std::move(entry));
@@ -1050,6 +1063,67 @@ void add_artics_2011(const std::vector<container::Detail2011>& details,
     }
 }
 
+/// The display text of a ^expression(id) library entry (a dynamic mark, tempo, or
+/// technique word), cleaned of the binary insert framing. "" if absent.
+[[nodiscard]] std::string expression_text_for_id(const std::string& pool, int id) {
+    const std::string head = "^expression(" + std::to_string(id) + ")";
+    const std::size_t pos = pool.find(head);
+    if (pos == std::string::npos) {
+        return std::string{};
+    }
+    const std::size_t body_start = pos + head.size();
+    const std::size_t end = pool.find("^end", body_start);
+    const std::size_t body_end = (end == std::string::npos) ? pool.size() : end;
+    return clean_text_block(std::string_view(pool.data() + body_start, body_end - body_start));
+}
+
+/// Classify an expression's display text as a dynamic mark (f, p, mf, ...). A single
+/// Maestro-font character resolves through dynamic_from_glyph; standard multi-letter
+/// dynamics pass through. Non-dynamic text (cresc./dim. words, tempi) -> nullopt.
+[[nodiscard]] std::optional<std::string> dynamic_string_from_expr(const std::string& text) {
+    std::size_t a = 0;
+    std::size_t b = text.size();
+    while (a < b && text[a] == ' ') {
+        ++a;
+    }
+    while (b > a && text[b - 1] == ' ') {
+        --b;
+    }
+    const std::string t = text.substr(a, b - a);
+    if (t.empty()) {
+        return std::nullopt;
+    }
+    if (t.size() == 1) {
+        return dynamic_from_glyph(static_cast<unsigned char>(t[0]));
+    }
+    static const std::set<std::string> words = {"p",  "pp", "ppp", "pppp", "mp",  "mf", "f",
+                                                "ff", "fff", "ffff", "sf",  "sfz", "fz", "fp",
+                                                "rf", "rfz", "sffz", "pf",  "sfp", "sfpp"};
+    if (words.count(t) != 0) {
+        return t;
+    }
+    return std::nullopt;
+}
+
+/// Attach dynamics from the type-27 class-0x428 expression assignments (len-10). Each
+/// names an expression def-id (data word0) resolved through the type-23 ^expression
+/// library; only those resolving to a dynamic mark are kept (the class also carries
+/// rehearsal letters / tempo text). Stored per entry, hoisted to the measure later.
+void add_dynamics_2011(const std::vector<container::Detail2011>& details,
+                       const std::string& verse_text, EntryFeatures& feats) {
+    for (const auto& d : details) {
+        if (d.cls != container::kClassExprAssign2011 || d.data.size() != 10) {
+            continue;
+        }
+        const int def_id = static_cast<int>(std::to_integer<unsigned>(d.data[0]) |
+                                            (std::to_integer<unsigned>(d.data[1]) << 8));
+        const std::string text = expression_text_for_id(verse_text, def_id);
+        if (const auto dyn = dynamic_string_from_expr(text)) {
+            feats.dynamic[d.cmper1].push_back(*dyn);
+        }
+    }
+}
+
 /// Build a score when there are no 2003-era measure specs / frame holders, e.g. a
 /// Finale 2010+ (zlib) file. Each entry-chain head (an entry that nothing links to)
 /// becomes one part; the chain is split into 4/4 measures (the common case), padded
@@ -1154,6 +1228,7 @@ build_score_from_chains(const std::vector<container::EntryRecord>& entries,
     EntryFeatures feats = features_from_lyric_assigns(details, verse_text);
     add_slurs_2011(details, entries, feats);
     add_artics_2011(details, doc, feats);
+    add_dynamics_2011(details, verse_text, feats);
 
     Score score;
     for (std::size_t i = 0; i < chains.size(); ++i) {

@@ -406,23 +406,26 @@ TEST_CASE("convert: composer is decoded from the title-area page texts",
     }
 }
 
-TEST_CASE("convert: 2011 slurs and articulations decode (vs negative controls)",
-          "[convert][notation]") {
-    // Tomkins (a cappella): 8 named staccatos (type-26 glyph library), and NO slurs.
+TEST_CASE("convert: 2011 slurs, articulations, and dynamics decode", "[convert][notation]") {
+    // Tomkins (a cappella): 8 named staccatos (type-26 glyph library); NO slurs or
+    // dynamics (the stock expression library is present but nothing is placed).
     if (const auto t = load_fixture("Tomkins_-_Out_of_the_deep.mus")) {
         rescore::Diagnostics diags;
         const auto res = rescore::convert_mus_to_musicxml(*t, diags);
         REQUIRE(res.has_value());
         REQUIRE_THAT(res.value(), ContainsSubstring("<staccato/>"));
-        REQUIRE(res.value().find("<slur ") == std::string::npos); // no slurs in a cappella
+        REQUIRE(res.value().find("<slur ") == std::string::npos);
+        REQUIRE(res.value().find("<dynamics>") == std::string::npos);
     }
-    // Gounod (instrumental): real slurs AND articulations (the present-side control).
+    // Gounod (instrumental): real slurs, articulations, AND dynamics (the present side).
     if (const auto g = load_fixture("Gounod-Meditation-Piano.mus")) {
         rescore::Diagnostics diags;
         const auto res = rescore::convert_mus_to_musicxml(*g, diags);
         REQUIRE(res.has_value());
         REQUIRE_THAT(res.value(), ContainsSubstring("<slur type=\"start\""));
         REQUIRE_THAT(res.value(), ContainsSubstring("<staccato/>"));
+        REQUIRE_THAT(res.value(), ContainsSubstring("<dynamics>"));
+        REQUIRE_THAT(res.value(), ContainsSubstring("<p/>"));
     }
 }
 
