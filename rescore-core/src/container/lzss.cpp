@@ -178,10 +178,10 @@ public:
 /// code is over-subscribed (invalid), >0 = incomplete.
 int hz_construct(Huffman& h, const int* length, int n) {
     for (int len = 0; len <= kMaxBits; ++len) {
-        h.count[len] = 0;
+        h.count[static_cast<std::size_t>(len)] = 0;
     }
     for (int sym = 0; sym < n; ++sym) {
-        ++h.count[length[sym]];
+        ++h.count[static_cast<std::size_t>(length[sym])];
     }
     if (h.count[0] == n) {
         return 0;
@@ -189,7 +189,7 @@ int hz_construct(Huffman& h, const int* length, int n) {
     int left = 1;
     for (int len = 1; len <= kMaxBits; ++len) {
         left <<= 1;
-        left -= h.count[len];
+        left -= h.count[static_cast<std::size_t>(len)];
         if (left < 0) {
             return left;
         }
@@ -197,11 +197,13 @@ int hz_construct(Huffman& h, const int* length, int n) {
     std::array<int, kMaxBits + 1> offs{};
     offs[1] = 0;
     for (int len = 1; len < kMaxBits; ++len) {
-        offs[len + 1] = offs[len] + h.count[len];
+        offs[static_cast<std::size_t>(len + 1)] =
+            offs[static_cast<std::size_t>(len)] + h.count[static_cast<std::size_t>(len)];
     }
     for (int sym = 0; sym < n; ++sym) {
         if (length[sym] != 0) {
-            h.symbol[offs[length[sym]]++] = static_cast<std::int16_t>(sym);
+            h.symbol[static_cast<std::size_t>(offs[static_cast<std::size_t>(length[sym])]++)] =
+                static_cast<std::int16_t>(sym);
         }
     }
     return left;
@@ -217,9 +219,9 @@ int hz_decode(InflateState& s, const Huffman& h) {
         if (s.failed_) {
             return -1;
         }
-        const int count = h.count[len];
+        const int count = h.count[static_cast<std::size_t>(len)];
         if (code - count < first) {
-            return h.symbol[index + (code - first)];
+            return h.symbol[static_cast<std::size_t>(index + (code - first))];
         }
         index += count;
         first += count;
