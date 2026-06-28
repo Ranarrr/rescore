@@ -73,8 +73,14 @@ void print_disclaimer(std::ostream &os) {
     os << "Not affiliated with MakeMusic; Finale is a trademark of its owner.\n";
 }
 
+// Version string is injected by the build (target_compile_definitions) from the
+// CMake PROJECT_VERSION; the fallback only applies to ad-hoc compiles.
+#ifndef RESCORE_CLI_VERSION
+#define RESCORE_CLI_VERSION "0.0.0-dev"
+#endif
+
 void print_version(std::ostream &os) {
-    os << "rescore 0.1.0 (Rescore legacy Finale .mus -> MusicXML 4.0)\n";
+    os << "rescore " RESCORE_CLI_VERSION " (Rescore legacy Finale .mus -> MusicXML 4.0)\n";
     print_disclaimer(os);
 }
 

@@ -16,6 +16,12 @@ target_link_libraries(rescore_cli
 
 set_target_properties(rescore_cli PROPERTIES OUTPUT_NAME rescore-cli)
 
+# Stamp the CLI banner with the project version so it cannot drift out of sync.
+target_compile_definitions(rescore_cli
+    PRIVATE
+        RESCORE_CLI_VERSION="${PROJECT_VERSION}"
+)
+
 # Inherit the project-wide warning configuration and (optionally) sanitizers.
 # These helpers are provided by the root cmake/ modules.
 rescore_set_warnings(rescore_cli)

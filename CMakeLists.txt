@@ -8,7 +8,7 @@ cmake_minimum_required(VERSION 3.24)
 
 project(
     Rescore
-    VERSION 0.1.0
+    VERSION 0.1.2
     DESCRIPTION "Convert legacy Finale .mus (Enigma Binary File) into MusicXML 4.0"
     HOMEPAGE_URL "https://github.com/Ranarrr/rescore"
     LANGUAGES CXX)
