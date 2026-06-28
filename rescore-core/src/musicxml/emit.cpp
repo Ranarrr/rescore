@@ -53,6 +53,21 @@ public:
         newline();
     }
 
+    /// <tag attrs>text</tag> with text escaped, on one logical line.
+    void leaf_attr(const std::string& tag, const std::string& attrs, const std::string& text) {
+        indent();
+        out_ += '<';
+        out_ += tag;
+        out_ += ' ';
+        out_ += attrs;
+        out_ += '>';
+        out_ += escape(text);
+        out_ += "</";
+        out_ += tag;
+        out_ += '>';
+        newline();
+    }
+
     /// Self-closing <tag/>.
     void empty(const std::string& tag) {
         indent();
@@ -520,10 +535,12 @@ Result<std::string> emit_score_partwise(const ir::Score& score, const EmitOption
         b.close("work");
     }
 
-    // identification: encoding provenance. (Creator/composer goes here too once
-    // its role is decoded from the page-text records; per the DTD it would
-    // precede <encoding>.)
+    // identification: composer (when decoded) then encoding provenance. Per the
+    // MusicXML DTD, <creator> precedes <encoding> inside <identification>.
     b.open("identification");
+    if (!score.composer.empty()) {
+        b.leaf_attr("creator", "type=\"composer\"", score.composer);
+    }
     b.open("encoding");
     b.leaf("software", "Rescore");
     b.close("encoding");

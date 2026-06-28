@@ -166,6 +166,7 @@ struct Part {
 /// The whole document.
 struct Score {
     std::string work_title;
+    std::string composer;
     std::vector<Part> parts;
 };
 

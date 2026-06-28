@@ -122,6 +122,9 @@ struct Doc2011 {
     std::vector<std::string> staff_names; // active-staff names in cmper order
     std::vector<int> staff_clefs;         // clef index per staff, aligned with staff_names
     int default_clef{0};                  // document default clef index (0 = treble)
+    // Text-block ids of the title-area page texts (top-centered, flagged): the
+    // title and composer page texts, in ascending block-id order.
+    std::vector<std::uint16_t> title_area_blocks;
 };
 
 /// Read the document attributes from a Finale 2010+ type-26 Others pool. Returns a

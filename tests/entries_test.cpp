@@ -360,6 +360,25 @@ TEST_CASE("convert: describe_era identifies the Finale build and format generati
     REQUIRE_THAT(rescore::describe_era(junk), ContainsSubstring("unrecognized"));
 }
 
+TEST_CASE("convert: composer is decoded from the title-area page texts",
+          "[convert][composer]") {
+    // Cross-validated on two independent Finale 2011/2012 files: the composer is
+    // the non-title top-centered page text, name taken before " - ".
+    if (const auto t = load_fixture("Tomkins_-_Out_of_the_deep.mus")) {
+        rescore::Diagnostics diags;
+        const auto res = rescore::convert_mus_to_musicxml(*t, diags);
+        REQUIRE(res.has_value());
+        REQUIRE_THAT(res.value(),
+                     ContainsSubstring("<creator type=\"composer\">Tomkins</creator>"));
+    }
+    if (const auto a = load_fixture("Tye_-_Alleluia.mus")) {
+        rescore::Diagnostics diags;
+        const auto res = rescore::convert_mus_to_musicxml(*a, diags);
+        REQUIRE(res.has_value());
+        REQUIRE_THAT(res.value(), ContainsSubstring("<creator type=\"composer\">Tye</creator>"));
+    }
+}
+
 TEST_CASE("convert: a Finale 2011 (zlib) file converts to MusicXML with notes",
           "[convert][zlib]") {
     const auto buf = load_fixture("Tomkins_-_Out_of_the_deep.mus");

@@ -317,6 +317,8 @@ Result<Doc2011> read_doc_2011(std::span<const std::byte> mus, Diagnostics& diags
         std::map<unsigned, std::pair<int, int>> timesig_library; // index -> (beats, divbeat)
         std::map<unsigned, std::string> names;                   // staff cmper -> name
         std::map<unsigned, int> staff_clef_by_cmper;             // staff cmper -> clef index
+        std::map<unsigned, unsigned> spec_block;                 // page-text spec -> block id
+        std::set<unsigned> title_area_specs;                     // top-centered flagged specs
         unsigned ts_index = 0;
         bool got_staff = false;
         std::size_t o = 0;
@@ -332,6 +334,17 @@ Result<Doc2011> read_doc_2011(std::span<const std::byte> mus, Diagnostics& diags
             if (tag == 0x00ADu && dlen >= 6) { // TimeSig library: w1 = beats, w2 = divbeat EDU
                 timesig_library[cmper] = {static_cast<int>(u16(data + 2)),
                                           static_cast<int>(u16(data + 4))};
+                // The same record family also encodes page-text alignment. A
+                // top-centered, flagged page text (halign=4, page-anchor=TOP in
+                // the vanchor high byte, flag=2) is a title-area text (the title
+                // or the composer). This reads extra fields; it does not change
+                // the TimeSig lookup, which is keyed by the staff's time index.
+                if (dlen >= 8 && u16(data + 2) == 4 && (u16(data + 4) >> 8) == 0x04u &&
+                    u16(data + 6) == 2) {
+                    title_area_specs.insert(cmper);
+                }
+            } else if (tag == 0x00ACu && dlen >= 4) { // page-text spec -> text-block id
+                spec_block[cmper] = u16(data + 2);
             } else if (tag == 0x00B9u && dlen >= 6 && !got_staff) { // per-staff key + time index
                 doc.key_field = static_cast<std::uint16_t>(u16(data));
                 ts_index = u16(data + 4);
@@ -376,6 +389,12 @@ Result<Doc2011> read_doc_2011(std::span<const std::byte> mus, Diagnostics& diags
             const auto cit = staff_clef_by_cmper.find(kv.first);
             doc.staff_clefs.push_back(cit != staff_clef_by_cmper.end() ? cit->second
                                                                        : doc.default_clef);
+        }
+        for (const unsigned spec : title_area_specs) {
+            const auto it = spec_block.find(spec);
+            if (it != spec_block.end()) {
+                doc.title_area_blocks.push_back(static_cast<std::uint16_t>(it->second));
+            }
         }
         break; // only the first type-26 chunk
     }

@@ -733,13 +733,11 @@ decode_measure_directions(const std::vector<container::OtherRecord>& others) {
 // Document metadata (work title) from the Enigma text pool.
 // ----------------------------------------------------------------------------
 
-/// Reduce one Enigma text block to its display text: the longest run of printable
-/// ASCII once command framing and insert glyphs are removed. Two command forms
-/// appear in the text pool - readable "^name(args)" (staff/group names) and binary
-/// "^<0x80+><control-bytes>" (page texts such as the title). Both are skipped, as
-/// are stray high-byte inserts (e.g. the page-number glyph that trails a title).
-[[nodiscard]] std::string clean_text_block(std::string_view seg) {
-    std::string best;
+/// Split one Enigma text block into its printable runs, dropping command framing
+/// (readable "^name(args)" and binary "^<0x80+><control-bytes>") and stray insert
+/// glyphs. A run is a maximal stretch of printable ASCII between commands/inserts.
+[[nodiscard]] std::vector<std::string> text_block_runs(std::string_view seg) {
+    std::vector<std::string> runs;
     std::string cur;
     const auto trim = [](const std::string& s) {
         std::size_t a = 0;
@@ -754,8 +752,8 @@ decode_measure_directions(const std::vector<container::OtherRecord>& others) {
     };
     const auto flush = [&]() {
         const std::string t = trim(cur);
-        if (t.size() > best.size()) {
-            best = t;
+        if (!t.empty()) {
+            runs.push_back(t);
         }
         cur.clear();
     };
@@ -802,6 +800,18 @@ decode_measure_directions(const std::vector<container::OtherRecord>& others) {
         ++i;
     }
     flush();
+    return runs;
+}
+
+/// Reduce a text block to its display text: the longest printable run (so a
+/// title's trailing page-number glyph does not pollute it).
+[[nodiscard]] std::string clean_text_block(std::string_view seg) {
+    std::string best;
+    for (const auto& run : text_block_runs(seg)) {
+        if (run.size() > best.size()) {
+            best = run;
+        }
+    }
     return best;
 }
 
@@ -859,6 +869,65 @@ decode_measure_directions(const std::vector<container::OtherRecord>& others) {
             continue;
         }
         return text;
+    }
+    return std::string{};
+}
+
+/// Full display text of a specific ^block(id): all printable runs joined in order
+/// (unlike clean_text_block, which keeps only the longest). For a composer block
+/// like "Composer - Title" this preserves the whole line so the name can be split
+/// off. Returns "" if the block is absent.
+[[nodiscard]] std::string block_joined_text(const std::string& pool, std::uint16_t id) {
+    const std::string head = "^block(" + std::to_string(id) + ")";
+    const std::size_t pos = pool.find(head);
+    if (pos == std::string::npos) {
+        return std::string{};
+    }
+    const std::size_t body_start = pos + head.size();
+    const std::size_t end = pool.find("^end", body_start);
+    const std::size_t body_end = (end == std::string::npos) ? pool.size() : end;
+    std::string out;
+    for (const auto& run :
+         text_block_runs(std::string_view(pool.data() + body_start, body_end - body_start))) {
+        if (!out.empty()) {
+            out += ' ';
+        }
+        out += run;
+    }
+    return out;
+}
+
+/// Pull the composer from the decoded title-area page texts. Those blocks (top-
+/// centered, flagged) are the title and the composer; the title is the lowest-id
+/// block (the one extract_work_title returns), so the composer is a later block.
+/// Its text follows the "Composer - [title]" convention, so we take the part before
+/// " - ". Cross-checked on two Finale 2011/2012 files ("Tomkins", "Tye"). Returns
+/// "" when no composer block is present.
+[[nodiscard]] std::string extract_composer(const std::string& pool,
+                                           const std::vector<std::uint16_t>& title_area_blocks) {
+    if (title_area_blocks.size() < 2) {
+        return std::string{};
+    }
+    std::vector<std::uint16_t> blocks = title_area_blocks;
+    std::sort(blocks.begin(), blocks.end());
+    for (std::size_t i = 1; i < blocks.size(); ++i) { // blocks[0] is the title
+        std::string text = block_joined_text(pool, blocks[i]);
+        if (const std::size_t dash = text.find(" - "); dash != std::string::npos) {
+            text = text.substr(0, dash);
+        }
+        while (!text.empty() && (text.back() == ' ' || text.back() == '-')) {
+            text.pop_back();
+        }
+        bool has_alpha = false;
+        for (const char ch : text) {
+            if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')) {
+                has_alpha = true;
+                break;
+            }
+        }
+        if (has_alpha) {
+            return text;
+        }
     }
     return std::string{};
 }
@@ -1309,6 +1378,13 @@ Result<std::string> convert_mus_to_musicxml(std::span<const std::byte> data, Dia
         if (!title.empty()) {
             diags.info("extracted work title: " + title);
             score.value().work_title = std::move(title);
+        }
+    }
+    if (score.value().composer.empty()) {
+        std::string composer = extract_composer(verse_text, doc2011.title_area_blocks);
+        if (!composer.empty()) {
+            diags.info("extracted composer: " + composer);
+            score.value().composer = std::move(composer);
         }
     }
 
