@@ -51,6 +51,7 @@ add_executable(rescore_tests
     emit_trivial_test.cpp
     lzss_others_test.cpp
     entries_test.cpp
+    corpus_harness_test.cpp
 )
 
 target_link_libraries(rescore_tests
